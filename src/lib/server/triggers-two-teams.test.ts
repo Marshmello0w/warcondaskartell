@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { evaluateTriggers, forgetRuleMemory, type TickContext } from './triggers';
 import type { TriggerRow } from './db/schema';
-import { validateTwoTeams } from './two-teams';
+import { TWO_TEAMS_MAX_ASKS, TWO_TEAMS_RETRY_MS, validateTwoTeams } from './two-teams';
 import type { Env } from './env';
 import type { Player } from '$lib/types';
 
@@ -95,13 +95,12 @@ describe('the Two-team mode rule', () => {
 		const rule = row(CLOSED);
 		const results: string[] = [];
 		for (let n = 0; n < 12; n++) {
-			const faction = n % 2 === 0 ? 'Lonestar' : 'Valkyra';
-			const ev = await look(rule, tick([player('7', faction)], n * 2000));
+			const ev = await look(rule, tick([player('7', 'Lonestar')], n * TWO_TEAMS_RETRY_MS));
 			results.push(...ev.updates.map((u) => u.lastResult ?? ''));
 		}
-		expect(results.filter((r) => r.startsWith('Moving'))).toHaveLength(3);
+		expect(results.filter((r) => r.startsWith('Moving'))).toHaveLength(TWO_TEAMS_MAX_ASKS);
 		expect(results.filter((r) => r.startsWith('Left'))).toEqual([
-			'Left P7 on Lonestar: asked to move 3 times in 10 min'
+			'Left P7 on Lonestar: asked to move 10 times in 10 min'
 		]);
 	});
 
@@ -109,16 +108,13 @@ describe('the Two-team mode rule', () => {
 		const rule = row(CLOSED);
 		const results: string[] = [];
 		// P7 keeps being put back while newcomers keep arriving on the closed faction
-		for (let n = 0; n < 8; n++) {
-			const players = [
-				player('7', n % 2 === 0 ? 'Lonestar' : 'Valkyra'),
-				player(String(100 + n), 'Lonestar')
-			];
-			const ev = await look(rule, tick(players, n * 2000));
+		for (let n = 0; n <= TWO_TEAMS_MAX_ASKS; n++) {
+			const players = [player('7', 'Lonestar'), player(String(100 + n), 'Lonestar')];
+			const ev = await look(rule, tick(players, n * 30_000));
 			results.push(...ev.updates.map((u) => u.lastResult ?? ''));
 		}
 		expect(results.filter((r) => r.includes('left P7'))).toEqual([
-			'Moving P106; left P7 on Lonestar: asked to move 3 times in 10 min'
+			'Moving P110; left P7 on Lonestar: asked to move 10 times in 10 min'
 		]);
 	});
 });

@@ -1386,7 +1386,7 @@ export async function dryRun(
 	}
 	if (kind === 'two_teams') {
 		result.notes.push(
-			'Faction moves are not kept in the session history, so there is nothing to replay. The live rule moves everyone on the closed faction to the smaller of the other two on each fresh player list, retrying a move that has not landed after 30 seconds.'
+			'Faction moves are not kept in the session history, so there is nothing to replay. The live rule checks the closed faction every 30 seconds, places its players on the smaller side, and retries every 15 seconds, up to 10 asks in 10 minutes. A player settled on an open side for 30 seconds starts with a fresh attempt budget.'
 		);
 		return result;
 	}
