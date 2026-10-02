@@ -73,6 +73,7 @@ import { liveView, writeLive } from './live';
 import { observations, observationSeconds } from './metrics';
 import { notifyWatchedJoins } from './webhook-delivery';
 import { nextDue, withHold } from './poller-schedule';
+import { TWO_TEAMS_RETRY_MS } from './two-teams';
 import { cashByFaction } from '$lib/cash';
 import type { Features, LiveView, Player, Status } from '$lib/types';
 
@@ -97,6 +98,8 @@ export interface ServerMemory {
 	statusDueAt: number;
 	/** the players cadence in force when the last players observation was launched */
 	playersIntervalMs: number;
+	/** an enabled Two-team rule needs fresh rosters for its 15-second retries */
+	twoTeamsOn: boolean;
 	failures: number;
 	/** no look before this time: the listener answered 429 with Retry-After (not a failure) */
 	holdUntil: number;
@@ -175,6 +178,7 @@ export function memoryFor(server: ServerRow, org: OrgRow): ServerMemory {
 			playersDueAt: 0,
 			statusDueAt: 0,
 			playersIntervalMs: 0,
+			twoTeamsOn: false,
 			failures: 0,
 			holdUntil: 0,
 			ok: false,
@@ -388,10 +392,17 @@ export function cadenceOf(tier: Tier, failures = 0): { players: number; status: 
 	}
 }
 
+/** Two-team checks must not depend on a browser being open or a slower site-wide cadence. */
+function memoryCadence(m: ServerMemory): { players: number; status: number } {
+	const c = cadenceOf(m.tier, m.failures);
+	if (m.twoTeamsOn && m.tier !== 'offline') c.players = Math.min(c.players, TWO_TEAMS_RETRY_MS);
+	return c;
+}
+
 /** Sets the next due time of each kind being launched (fixed cadence); the other kind keeps its deadline. */
 export function planNext(m: ServerMemory, now: number, kinds: ObserveKinds): void {
 	m.tier = tierOf(m, now);
-	const c = cadenceOf(m.tier, m.failures);
+	const c = memoryCadence(m);
 	if (kinds.players) {
 		m.playersIntervalMs = c.players;
 		m.playersDueAt = nextDue(m.playersDueAt || now, c.players, now);
@@ -404,7 +415,7 @@ export function planNext(m: ServerMemory, now: number, kinds: ObserveKinds): voi
 /** After an observation the tier may have changed: pull the due times in if it got faster. */
 export function replan(m: ServerMemory, now: number): void {
 	m.tier = tierOf(m, now);
-	const c = cadenceOf(m.tier, m.failures);
+	const c = memoryCadence(m);
 	m.playersDueAt = Math.min(Math.max(m.playersDueAt, now), now + c.players);
 	m.statusDueAt = Math.min(Math.max(m.statusDueAt, now), now + c.status);
 	if (m.again) {
@@ -539,6 +550,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 			]
 		: [];
 	const rows = m.status ? await enabledTriggers(env, server.id) : [];
+	m.twoTeamsOn = rows.some((r) => r.kind === 'two_teams');
 	// A risk kick judges whoever is on the server, not only a join: joiners at once, a player back
 	// after missing a look at once (a kicked player reconnecting inside the leave grace is the
 	// same session, not a join), and everyone on again every RISK_RECHECK_MS in one batch, which

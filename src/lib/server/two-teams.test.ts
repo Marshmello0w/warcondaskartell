@@ -2,9 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import {
 	emptyTwoTeamsState,
 	TWO_TEAMS_ASK_WINDOW_MS,
+	TWO_TEAMS_CHECK_MS,
 	TWO_TEAMS_FORGET_MS,
 	TWO_TEAMS_MAX_ASKS,
 	TWO_TEAMS_RETRY_MS,
+	TWO_TEAMS_SETTLED_MS,
 	teamName,
 	twoTeamsSettingsKey,
 	twoTeamsStep,
@@ -72,7 +74,7 @@ describe('twoTeamsStep', () => {
 	});
 
 	test('a move in flight is not asked for again, and counts toward its side', () => {
-		const a = step(emptyTwoTeamsState(), [p('1', 'Lonestar')], 0);
+		const a = step(emptyTwoTeamsState(), [p('1', 'Lonestar'), p('2', 'Lonestar')], 0, 1);
 		expect(a.moves).toHaveLength(1);
 		const to = a.moves[0].to;
 		const b = step(a.state, [p('1', 'Lonestar'), p('2', 'Lonestar')], 5000);
@@ -82,8 +84,29 @@ describe('twoTeamsStep', () => {
 
 	test('a move that has not landed is retried', () => {
 		const a = step(emptyTwoTeamsState(), [p('1', 'Lonestar')], 0);
+		expect(step(a.state, [p('1', 'Lonestar')], 14_999).moves).toEqual([]);
 		const b = step(a.state, [p('1', 'Lonestar')], TWO_TEAMS_RETRY_MS);
 		expect(b.moves).toHaveLength(1);
+	});
+
+	test('sweeps every 30 seconds while known players retry after 15 seconds', () => {
+		const a = step(emptyTwoTeamsState(), [p('1', 'Lonestar')], 0);
+		const players = [p('1', 'Lonestar'), p('2', 'Lonestar')];
+		const early = step(a.state, players, 5000);
+		expect(early.moves).toEqual([]);
+		const retry = step(early.state, players, 15_000);
+		expect(retry.moves.map((m) => m.steamId)).toEqual(['1']);
+		const before = step(retry.state, players, 29_999);
+		expect(before.moves).toEqual([]);
+		const sweep = step(before.state, players, TWO_TEAMS_CHECK_MS);
+		expect(sweep.moves.map((m) => m.steamId)).toEqual(['2', '1']);
+	});
+
+	test('new placements get a turn before an overdue retry', () => {
+		const players = [p('1', 'Lonestar'), p('2', 'Lonestar')];
+		const a = step(emptyTwoTeamsState(), players, 0, 1);
+		const b = step(a.state, players, TWO_TEAMS_RETRY_MS, 1);
+		expect(b.moves.map((m) => m.steamId)).toEqual(['2']);
 	});
 
 	test('a landed player is whispered once, and not again after the next match re-sort', () => {
@@ -123,14 +146,12 @@ describe('twoTeamsStep', () => {
 		expect(sides.filter((s) => s === 'Valkyra')).toHaveLength(4);
 	});
 
-	test('a player put back again and again is asked at most three times in ten minutes', () => {
+	test('a stuck player gets ten attempts, 15 seconds apart, then one warning and a pause', () => {
 		let state = emptyTwoTeamsState();
 		let asks = 0;
 		const stopped: string[] = [];
-		// every look: back on the closed faction, as if the game kept putting them there
-		for (let look = 0; look < 30; look++) {
-			const faction = look % 2 === 0 ? 'Lonestar' : 'Valkyra';
-			const r = step(state, [p('1', faction)], look * 2000);
+		for (let look = 0; look < 12; look++) {
+			const r = step(state, [p('1', 'Lonestar')], look * TWO_TEAMS_RETRY_MS);
 			state = r.state;
 			asks += r.moves.length;
 			stopped.push(...r.stopped.map((s) => s.steamId));
@@ -141,6 +162,44 @@ describe('twoTeamsStep', () => {
 		const later = step(state, [p('1', 'Lonestar')], TWO_TEAMS_ASK_WINDOW_MS + 60_000);
 		expect(later.moves).toHaveLength(1);
 		expect(later.state.capped.has('1')).toBe(false);
+	});
+
+	test('30 seconds settled on an open side resets the failed attempts, even without a whisper', () => {
+		const quiet = { ...cfg, message: '' };
+		let state = emptyTwoTeamsState();
+		for (let n = 0; n <= TWO_TEAMS_MAX_ASKS; n++)
+			state = step(state, [p('1', 'Lonestar')], n * TWO_TEAMS_RETRY_MS, ALL, quiet).state;
+		expect(state.capped.has('1')).toBe(true);
+		const at = (TWO_TEAMS_MAX_ASKS + 1) * TWO_TEAMS_RETRY_MS;
+		const landed = step(state, [p('1', 'Valkyra')], at, ALL, quiet);
+		expect(landed.state.asked.get('1')).toHaveLength(10);
+		const settled = step(landed.state, [p('1', 'Valkyra')], at + TWO_TEAMS_SETTLED_MS, ALL, quiet);
+		expect(settled.state.asked.has('1')).toBe(false);
+		expect(settled.state.capped.has('1')).toBe(false);
+		const returned = step(
+			settled.state,
+			[p('1', 'Lonestar')],
+			at + TWO_TEAMS_SETTLED_MS + TWO_TEAMS_CHECK_MS,
+			ALL,
+			quiet
+		);
+		expect(returned.moves).toHaveLength(1);
+	});
+
+	test('brief switches do not reset the loop guard or allow faster moves', () => {
+		let state = emptyTwoTeamsState();
+		let asks = 0;
+		for (let n = 0; n <= TWO_TEAMS_MAX_ASKS; n++) {
+			const at = n * TWO_TEAMS_CHECK_MS;
+			const blue = step(state, [p('1', 'Lonestar')], at);
+			asks += blue.moves.length;
+			state = step(blue.state, [p('1', 'Valkyra')], at + 1000).state;
+			const returned = step(state, [p('1', 'Lonestar')], at + 2000);
+			expect(returned.moves).toEqual([]);
+			state = returned.state;
+		}
+		expect(asks).toBe(10);
+		expect(state.capped.has('1')).toBe(true);
 	});
 });
 

@@ -9,7 +9,11 @@ import { ApiError, str } from './http';
 import { MAX_CHAT } from '$lib/chat';
 
 /** How long a move is waited on before it is asked for again (the player is still on the closed faction). */
-export const TWO_TEAMS_RETRY_MS = 30_000;
+export const TWO_TEAMS_RETRY_MS = 15_000;
+/** Discover everyone on the closed faction every 30 seconds; known players retry independently. */
+export const TWO_TEAMS_CHECK_MS = 30_000;
+/** A confirmed placement must stay on an open side this long before its failed asks are forgotten. */
+export const TWO_TEAMS_SETTLED_MS = 30_000;
 /** A placed player is told once; the note is forgotten after this long away, so a return next day is told again. */
 export const TWO_TEAMS_FORGET_MS = 2 * 3600_000;
 /**
@@ -27,7 +31,7 @@ export const TWO_TEAMS_MAX_MOVES_PER_LOOK = 6;
  * A player asked to move this many times within TWO_TEAMS_ASK_WINDOW_MS is left where they are
  * until the window passes: something keeps putting them back, and every move kills them.
  */
-export const TWO_TEAMS_MAX_ASKS = 3;
+export const TWO_TEAMS_MAX_ASKS = 10;
 export const TWO_TEAMS_ASK_WINDOW_MS = 10 * 60_000;
 
 export interface TwoTeamsConfig {
@@ -60,6 +64,12 @@ export const twoTeamsSettingsKey = (cfg: TwoTeamsConfig): string => settingsFing
 
 /** What the rule remembers between player lists (the worker's memory, per rule). */
 export interface TwoTeamsState {
+	/** last full sweep; null makes the first fresh list a sweep */
+	checkedAt: number | null;
+	/** discovered players waiting for placement, including those beyond a look's move budget */
+	pending: Set<string>;
+	/** first fresh sight on an open side after an ask; brief switches do not reset the loop guard */
+	openSince: Map<string, number>;
 	/** moves asked for and not yet seen landed: SteamID -> target faction and when */
 	moving: Map<string, { to: string; at: number }>;
 	/** placed players already told where they went, when there is a whisper: SteamID -> last seen */
@@ -71,6 +81,9 @@ export interface TwoTeamsState {
 }
 
 export const emptyTwoTeamsState = (): TwoTeamsState => ({
+	checkedAt: null,
+	pending: new Set(),
+	openSince: new Map(),
 	moving: new Map(),
 	told: new Map(),
 	asked: new Map(),
@@ -103,6 +116,9 @@ export function twoTeamsStep(
 	random: () => number = Math.random
 ): TwoTeamsStep {
 	const state: TwoTeamsState = {
+		checkedAt: previous.checkedAt,
+		pending: new Set(previous.pending),
+		openSince: new Map(previous.openSince),
 		moving: new Map(previous.moving),
 		told: new Map(previous.told),
 		asked: new Map(previous.asked),
@@ -118,6 +134,19 @@ export function twoTeamsStep(
 	const on = new Set<string>();
 	for (const p of players) {
 		on.add(p.steamId);
+		const isOpen = !!p.faction && counts.has(p.faction);
+		if (isOpen) {
+			state.pending.delete(p.steamId);
+			if (state.asked.has(p.steamId)) {
+				const since = state.openSince.get(p.steamId) ?? now;
+				state.openSince.set(p.steamId, since);
+				if (now - since >= TWO_TEAMS_SETTLED_MS) {
+					state.asked.delete(p.steamId);
+					state.capped.delete(p.steamId);
+					state.openSince.delete(p.steamId);
+				}
+			}
+		} else state.openSince.delete(p.steamId);
 		// Landed (or placed by hand meanwhile): the move is done; with a whisper, tell them once.
 		const landed = !!p.faction && counts.has(p.faction) && state.moving.has(p.steamId);
 		if (landed) state.moving.delete(p.steamId);
@@ -128,6 +157,7 @@ export function twoTeamsStep(
 	}
 	for (const [id, seen] of state.told)
 		if (!on.has(id) && now - seen > TWO_TEAMS_FORGET_MS) state.told.delete(id);
+	for (const id of state.openSince.keys()) if (!on.has(id)) state.openSince.delete(id);
 	for (const [id, m] of state.moving) if (now - m.at >= TWO_TEAMS_RETRY_MS) state.moving.delete(id);
 	for (const [id, times] of state.asked) {
 		const recent = times.filter((t) => now - t < TWO_TEAMS_ASK_WINDOW_MS);
@@ -138,15 +168,27 @@ export function twoTeamsStep(
 		if ((state.asked.get(id)?.length ?? 0) < TWO_TEAMS_MAX_ASKS) state.capped.delete(id);
 
 	if (open.length < 2) return { state, moves, whispers, stopped };
+	if (state.checkedAt === null || now - state.checkedAt >= TWO_TEAMS_CHECK_MS) {
+		state.checkedAt = now;
+		for (const id of state.pending) if (!on.has(id)) state.pending.delete(id);
+		for (const p of players) if (p.faction === cfg.closedFaction) state.pending.add(p.steamId);
+	}
 	// Moves still in flight count toward their side before anyone new is placed.
 	for (const p of players) {
 		const m = state.moving.get(p.steamId);
 		if (p.faction === cfg.closedFaction && m && counts.has(m.to))
 			counts.set(m.to, counts.get(m.to)! + 1);
 	}
-	for (const p of players) {
-		if (p.faction !== cfg.closedFaction || state.moving.has(p.steamId)) continue;
+	// New players and the longest-waiting retries go first, so a stuck player cannot starve a burst.
+	const lastAsk = (id: string) => state.asked.get(id)?.at(-1) ?? -Infinity;
+	const candidates = players
+		.filter((p) => p.faction === cfg.closedFaction && state.pending.has(p.steamId))
+		.sort((a, b) => lastAsk(a.steamId) - lastAsk(b.steamId));
+	for (const p of candidates) {
+		if (state.moving.has(p.steamId)) continue;
 		const times = state.asked.get(p.steamId) ?? [];
+		// A brief landing can clear `moving`, but never allows another move sooner than 15 seconds.
+		if (now - (times.at(-1) ?? -Infinity) < TWO_TEAMS_RETRY_MS) continue;
 		if (times.length >= TWO_TEAMS_MAX_ASKS) {
 			if (!state.capped.has(p.steamId)) {
 				state.capped.add(p.steamId);

@@ -1741,10 +1741,11 @@
 						</p>
 					</fieldset>
 					<p class="note">
-						Players are placed a few at a time as the player list refreshes. A player asked to move
-						three times in ten minutes is left where they are until the ten minutes pass. It never
-						moves players between the two open sides, so a manual switch sticks. One rule per
-						server.
+						The closed faction is checked every 30 seconds. Players are placed a few at a time, with
+						retries every 15 seconds, up to ten attempts in ten minutes. If a player still cannot be
+						placed, the rule reports it and pauses until older attempts expire. After 30 seconds
+						settled on an open side, their attempt budget resets. It never moves players between the
+						two open sides, so a manual switch sticks. One rule per server.
 					</p>
 				{:else if f.kind === 'team_kill'}
 					<fieldset class="space-y-2">
