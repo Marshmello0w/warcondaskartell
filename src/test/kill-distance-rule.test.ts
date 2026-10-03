@@ -3,7 +3,7 @@
 // only the chosen weapons from the distance on count; a flag sends nothing to the game and is
 // audited, a warning is a whisper row, a kick is a kick row, and a ban is an entry on the panel's
 // ban list that the panel's own enforcement removes the player with at the next look, written only
-// while the worker is owned. From 0 m every kill with the chosen weapons counts, one without a
+// while the worker is owned. A kill kills the player, then whispers them, soon or not at all. From 0 m every kill with the chosen weapons counts, one without a
 // distance too. Nothing a person or a key can call runs the rule's ban or flag.
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { and, eq, isNull } from 'drizzle-orm';
@@ -30,6 +30,7 @@ import { WardogsClient } from '$lib/server/rcon';
 import { dryRun, invalidateTriggers, validateConfig } from '$lib/server/triggers';
 import { KILL_DISTANCE_FLAG } from '$lib/server/kill-distance';
 import { PANEL_BAN } from '$lib/server/rule-ban';
+import { RULE_KILL } from '$lib/server/rule-kill';
 import { newId } from '$lib/server/http';
 import { callApi, stubGateway } from './call';
 import { hasTestDb, testEnv } from './db';
@@ -38,6 +39,8 @@ import { seedWorld, type World } from './world';
 const DEFIB = 'Id.Item.Defibrillator.Standard';
 const HUMVEE_M249 = 'Id.Vehicle.WeaponExtension.WHL_05.RingTurret';
 const HUMVEE_MINIGUN = 'Id.Vehicle.WeaponExtension.WHL_05.RingMinigun';
+/** the vehicle itself: a roadkill, or the Humvee blown up with its crew inside */
+const HUMVEE = 'Vehicle.Variant.Land.Wheeled.Humvee.Default';
 const CHEAT = '76561198000000801';
 const MEDIC = '76561198000000802';
 const SNIPER = '76561198000000803';
@@ -73,6 +76,10 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 	const kicked: [string, string, string][] = [];
 	/** the whispers it was asked for: server, player, message */
 	const whispered: [string, string, string][] = [];
+	/** the kills and whispers it was asked for, in order: server, what, player */
+	const sent: [string, 'kill' | 'whisper', string][] = [];
+	/** players on the server it will not kill (no living character, as far as the panel can tell) */
+	const dead = new Set<string>();
 
 	beforeAll(async () => {
 		env = { ...(await testEnv()), STEAM_API_KEY: '' };
@@ -113,7 +120,19 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 				const whisper = /^\/v1\/players\/(\d{17})\/message$/.exec(path);
 				if (method === 'POST' && whisper) {
 					whispered.push([server.id, whisper[1], JSON.parse(body ?? '{}').message]);
+					sent.push([server.id, 'whisper', whisper[1]]);
 					return ok('{"message":"Message sent."}');
+				}
+				const kill = /^\/v1\/players\/(\d{17})\/kill$/.exec(path);
+				if (method === 'POST' && kill) {
+					sent.push([server.id, 'kill', kill[1]]);
+					if (dead.has(kill[1]))
+						return {
+							...ok('{"error":{"code":"not_alive","message":"GAME-TEXT"}}'),
+							status: 409,
+							statusText: 'Conflict'
+						};
+					return ok('{"message":"Player killed."}');
 				}
 				return raw(method, path, body, headers);
 			};
@@ -328,6 +347,98 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 			]);
 			expect(whispered.filter(([, p]) => p === GONE)).toEqual([]);
 		} finally {
+			forgetMemory(server.id);
+		}
+	});
+
+	test('a kill on the Humvee from 0 m: one kill and its whisper for a roadkill of three, in the panel’s words; a player gone, or a kill gone stale, is not killed', async () => {
+		const w = await seedWorld(env);
+		const [server] = await env.db.select().from(servers).where(eq(servers.id, w.server.id));
+		const [org] = await env.db.select().from(organizations).where(eq(organizations.id, w.org.id));
+		const m = memoryFor(server, org);
+		onServer.set(server.id, [CHEAT, MEDIC, SNIPER]);
+		dead.add(SNIPER);
+		try {
+			await observeServer(env, m, { status: true, players: true });
+			const id = await rule(w, w.server.id, {
+				causes: [HUMVEE],
+				minDistanceM: 0,
+				count: 1,
+				action: 'kill',
+				reason: '{name}: no {weapon} on this server.'
+			});
+			// three run over at once, the feed sending no distance, and the next batch right behind
+			await post(
+				w.server.id,
+				[100, 101, 102].map((t) => ev(CHEAT, { cause: HUMVEE, distanceM: null, eventTime: t }))
+			);
+			await post(w.server.id, [ev(CHEAT, { cause: HUMVEE, distanceM: null, eventTime: 104 })]);
+			const rows = await rowsOf(id);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({
+				action: RULE_KILL,
+				target: CHEAT,
+				steamId: CHEAT,
+				okMessage: 'Killed p801: Humvee kill',
+				params: {
+					steamId: CHEAT,
+					name: 'p801',
+					why: 'Humvee kill',
+					message: 'p801: no Humvee on this server.'
+				}
+			});
+			// sent only while the rule holds the settings it was decided under
+			expect((rows[0].params as { rule?: string }).rule).toMatch(/^[A-Za-z0-9_-]{16}$/);
+			const [done] = await deliver(rows[0].id);
+			// what became of it is told in the panel's words, never the game's
+			expect([done.state, done.outcome]).toEqual(['delivered', 'Killed p801: Humvee kill']);
+			expect(sent.filter(([s]) => s === w.server.id)).toEqual([
+				[w.server.id, 'kill', CHEAT],
+				[w.server.id, 'whisper', CHEAT]
+			]);
+			expect(whispered.filter(([s]) => s === w.server.id)).toEqual([
+				[w.server.id, CHEAT, 'p801: no Humvee on this server.']
+			]);
+			const [audit] = await auditSoon(w.server.id, 'trigger.kill_distance', CHEAT);
+			expect([audit.outcome, audit.category, audit.message]).toEqual([
+				'ok',
+				'trigger',
+				'Killed p801: Humvee kill'
+			]);
+			// one the game will not kill is told all the same, and the trail says so in the panel's words
+			await post(w.server.id, [ev(SNIPER, { cause: HUMVEE, distanceM: null, eventTime: 130 })]);
+			const [unkilled] = (await rowsOf(id)).filter((r) => r.steamId === SNIPER);
+			const told = 'Told p803, but the game refused the kill: Humvee kill';
+			expect((await deliver(unkilled.id)).map((d) => [d.state, d.outcome])).toEqual([
+				['delivered', told]
+			]);
+			expect(sent.filter(([s, , p]) => s === w.server.id && p === SNIPER)).toEqual([
+				[w.server.id, 'kill', SNIPER],
+				[w.server.id, 'whisper', SNIPER]
+			]);
+			const [audited] = await auditSoon(w.server.id, 'trigger.kill_distance', SNIPER);
+			expect([audited.outcome, audited.message]).toEqual(['ok', told]);
+			// a killer the server does not list: queued, but a kill needs them on
+			await post(w.server.id, [ev(GONE, { cause: HUMVEE, distanceM: null, eventTime: 140 })]);
+			const [left] = (await rowsOf(id)).filter((r) => r.steamId === GONE);
+			expect((await deliver(left.id)).map((d) => [d.state, d.outcome])).toEqual([
+				['skipped', 'Player already left.']
+			]);
+			// one decided more than half a minute ago goes no more
+			await post(w.server.id, [ev(MEDIC, { cause: HUMVEE, distanceM: null, eventTime: 150 })]);
+			const [late] = (await rowsOf(id)).filter((r) => r.steamId === MEDIC);
+			await env.db
+				.update(outbox)
+				.set({ createdAt: new Date(Date.now() - 31_000) })
+				.where(eq(outbox.id, late.id));
+			const [stale] = await deliver(late.id);
+			expect(stale.state).toBe('skipped');
+			expect(stale.outcome).toMatch(/^Stale \(3\ds old\)\.$/);
+			expect(sent.filter(([s, , p]) => s === w.server.id && p !== CHEAT && p !== SNIPER)).toEqual(
+				[]
+			);
+		} finally {
+			dead.clear();
 			forgetMemory(server.id);
 		}
 	});
@@ -754,7 +865,7 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 		);
 	});
 
-	test('nothing a person or a key can call runs a rule’s ban or flag', async () => {
+	test('nothing a person or a key can call runs a rule’s ban, flag or kill', async () => {
 		const w = await seedWorld(env);
 		const mod = await import(
 			join(
@@ -769,11 +880,11 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 				'+server.ts'
 			)
 		);
-		for (const action of [PANEL_BAN, KILL_DISTANCE_FLAG]) {
+		for (const action of [PANEL_BAN, KILL_DISTANCE_FLAG, RULE_KILL]) {
 			const r = await callApi(mod.POST, w.users.owner, {
 				method: 'POST',
 				params: { id: w.server.id, action },
-				body: { steamId: CHEAT, reason: 'x', days: 0, scope: 'org', name: 'x' }
+				body: { steamId: CHEAT, reason: 'x', days: 0, scope: 'org', name: 'x', message: 'x' }
 			});
 			expect([action, r.status, r.code]).toEqual([action, 404, 'unknown_action']);
 		}
