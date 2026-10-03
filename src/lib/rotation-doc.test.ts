@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 import {
 	formatRotationEntry,
 	parseRotationEntry,
+	setModifierOnAll,
 	rotationFromText,
 	rotationIntoText
 } from './rotation-doc';
@@ -91,4 +92,51 @@ test('setArrayInText adds a block to a section that has none, or a missing secti
 	const u = setArrayInText('[A]\nx=1\n', 'B', 'K', []);
 	expect(u).toBe('[A]\nx=1\n\n[B]\n!K=ClearArray\n');
 	expect(getArray(parseIni(t), 'A', 'K')).toEqual(['v1', 'v2']);
+});
+
+test('setModifierOnAll adds a modifier after the game mode where the map offers it', () => {
+	const r = rotationFromText(TEXT);
+	const out = setModifierOnAll(r.entries, 'KOTH_InfantryOnly', true, (map) => map !== 'Mars');
+	expect(out.changed).toBe(1);
+	expect(out.skipped).toBe(0);
+	expect(out.entries[0].experiences).toEqual(['Bakurani_KOTH_01', 'KOTH_InfantryOnly']);
+	// Already on: left as it was, not doubled.
+	expect(out.entries[1]).toBe(r.entries[1]);
+	expect(formatRotationEntry(out.entries[0])).toBe(
+		'(Map="Kavkazi",Experiences="Bakurani_KOTH_01+KOTH_InfantryOnly",Lighting="DayEarlyClear",ZoneAlternator="ZoneAlternator.Bakurani.Default.Circle")'
+	);
+	const mars = { map: 'Mars', experiences: ['Mars_KOTH_01'], lighting: 'L', zoneAlternator: '' };
+	const skip = setModifierOnAll([mars], 'KOTH_InfantryOnly', true, (map) => map !== 'Mars');
+	expect(skip).toEqual({ entries: [mars], changed: 0, skipped: 1 });
+});
+
+test('setModifierOnAll takes a modifier off every entry, in any case, and keeps the rest', () => {
+	const entries = [
+		{
+			map: 'Europe',
+			experiences: ['Madrid_KOTH_01', 'koth_infantryonly', 'KOTH_Hardcore'],
+			lighting: 'L',
+			zoneAlternator: ''
+		},
+		{ map: 'Kavkazi', experiences: ['Bakurani_KOTH_01'], lighting: 'L', zoneAlternator: 'Z' }
+	];
+	const out = setModifierOnAll(entries, 'KOTH_InfantryOnly', false, () => false);
+	expect(out.changed).toBe(1);
+	expect(out.skipped).toBe(0);
+	expect(out.entries[0].experiences).toEqual(['Madrid_KOTH_01', 'KOTH_Hardcore']);
+	expect(out.entries[1]).toBe(entries[1]);
+	// The input is not changed in place.
+	expect(entries[0].experiences).toHaveLength(3);
+	// Not taken off an entry it is the only experience of: that would leave no game mode.
+	const only = {
+		map: 'Europe',
+		experiences: ['KOTH_InfantryOnly'],
+		lighting: 'L',
+		zoneAlternator: ''
+	};
+	expect(setModifierOnAll([only], 'KOTH_InfantryOnly', false, () => true)).toEqual({
+		entries: [only],
+		changed: 0,
+		skipped: 1
+	});
 });
