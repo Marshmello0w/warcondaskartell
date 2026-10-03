@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { can, type Capability } from '$lib/capabilities';
-	import { health, identity, setHealth, throttled } from '$lib/health.svelte';
+	import { health, identity, occupancy, setHealth, throttled } from '$lib/health.svelte';
+	import { followLive } from '$lib/live';
+	import { fmtNum } from '$lib/format';
 	import Pulse from '$lib/components/Pulse.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
@@ -63,6 +65,8 @@
 		}
 	}
 	let live = $derived(health[data.server.id]);
+	let occ = $derived(data.server.id in occupancy ? occupancy[data.server.id] : data.occupancy);
+	$effect(() => followLive(data.server.id));
 	// The uptime counts up on its own between looks: a minute clock, only while the page is open.
 	let now = $state(Date.now());
 	$effect(() => {
@@ -130,10 +134,11 @@
 				<p class="mt-1.5 line-clamp-2 text-[12.5px] text-mist-400">{data.server.notes}</p>
 			{/if}
 		</div>
+		<!-- The lines between cells are gaps over the list's background, so a phone can wrap the cells. -->
 		<dl
-			class="flex divide-x divide-white/8 rounded-ctl border border-white/8 bg-ink-950/70 text-[13px]"
+			class="flex flex-wrap gap-px overflow-hidden rounded-ctl border border-white/8 bg-white/8 bg-clip-padding text-[13px]"
 		>
-			<div class="flex flex-col gap-0.5 px-3.5 py-2">
+			<div class="flex grow flex-col gap-0.5 bg-ink-950 px-3.5 py-2">
 				<dt class="caps text-mist-400">Status</dt>
 				<dd
 					class="inline-flex items-center gap-2 whitespace-nowrap {live === false
@@ -155,13 +160,21 @@
 							: 'connecting…'}
 				</dd>
 			</div>
+			{#if occ && live !== false}
+				<div class="flex grow flex-col gap-0.5 bg-ink-950 px-3.5 py-2">
+					<dt class="caps text-mist-400">Players</dt>
+					<dd class="whitespace-nowrap text-mist-100 tabular">
+						{fmtNum(occ.players)} / {fmtNum(occ.max)}
+					</dd>
+				</div>
+			{/if}
 			{#if restart}
-				<div class="flex flex-col gap-0.5 px-3.5 py-2">
+				<div class="flex grow flex-col gap-0.5 bg-ink-950 px-3.5 py-2">
 					<dt class="caps text-mist-400">Uptime</dt>
 					<dd class="whitespace-nowrap text-mist-100">{fmtUptime(restart.upMs)}</dd>
 				</div>
 				{#if restart.untilDueMs !== null || restart.due}
-					<div class="flex flex-col gap-0.5 px-3.5 py-2">
+					<div class="flex grow flex-col gap-0.5 bg-ink-950 px-3.5 py-2">
 						<dt class="caps text-mist-400">Restart</dt>
 						<dd
 							class="whitespace-nowrap {restart.due ||

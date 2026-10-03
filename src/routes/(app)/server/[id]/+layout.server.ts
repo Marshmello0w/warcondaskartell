@@ -5,6 +5,7 @@ import { getOrg, getServer, requireUser, serverAccessFor, shapeServer } from '$l
 import { publicMessage } from '$lib/server/http';
 import { gateway } from '$lib/server/gateway';
 import { cachedCatalog, rememberCatalog } from '$lib/server/catalog-cache';
+import type { Occupancy } from '$lib/health.svelte';
 import type { Catalog, Features, ServerInfo } from '$lib/types';
 
 const EMPTY: Catalog = { maps: [], lightings: [], experiences: [] };
@@ -63,6 +64,7 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 		gameServerId: '',
 		startedAt: null
 	};
+	let occupancy: Occupancy | null = null;
 	try {
 		const live = (await gateway().live(env, [row.id])).get(row.id);
 		identity = {
@@ -70,8 +72,10 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 			gameServerId: live?.gameServerId ?? '',
 			startedAt: live?.startedAt ?? null
 		};
+		if (live?.ok && live.status)
+			occupancy = { players: live.status.playerCount, max: live.status.maxPlayers };
 	} catch {
 		/* shown without an id until the worker answers */
 	}
-	return { server, catalog, features, reachable, problem, identity };
+	return { server, catalog, features, reachable, problem, identity, occupancy };
 };

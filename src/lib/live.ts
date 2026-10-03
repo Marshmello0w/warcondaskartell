@@ -16,6 +16,13 @@ export interface KillsNotice {
 }
 
 const SAFETY_POLL_MS = 20_000;
+/** Open streams per server id, so the header knows when it need not read for itself. */
+const streamed = new Map<string, number>();
+
+async function readLive(query: string): Promise<LiveView[]> {
+	const d = await api<{ live: Record<string, LiveView> }>('GET', `/api/live?${query}`);
+	return Object.values(d.live);
+}
 
 export function watchLive(
 	ids: string[],
@@ -33,11 +40,12 @@ export function watchLive(
 	let stopped = false;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 
+	for (const id of ids) streamed.set(id, (streamed.get(id) ?? 0) + 1);
+
 	const poll = async () => {
 		if (stopped || document.hidden) return;
 		try {
-			const d = await api<{ live: Record<string, LiveView> }>('GET', `/api/live?${query}`);
-			for (const v of Object.values(d.live)) onLive(v);
+			for (const v of await readLive(query)) onLive(v);
 		} catch {
 			/* the stream carries on */
 		}
@@ -69,8 +77,31 @@ export function watchLive(
 	document.addEventListener('visibilitychange', onVis);
 	return () => {
 		stopped = true;
+		for (const id of ids) {
+			const n = (streamed.get(id) ?? 1) - 1;
+			if (n > 0) streamed.set(id, n);
+			else streamed.delete(id);
+		}
 		close();
 		clearInterval(pollTimer);
 		document.removeEventListener('visibilitychange', onVis);
 	};
+}
+
+/**
+ * Keeps one server's header current on a page that streams nothing: the worker's last look every
+ * SAFETY_POLL_MS, skipped while a stream of that server is open. A plain read, unlike the stream,
+ * so it never moves the server into the watched tier.
+ */
+export function followLive(id: string): () => void {
+	const query = `ids=${encodeURIComponent(id)}`;
+	const timer = setInterval(async () => {
+		if (document.hidden || streamed.has(id)) return;
+		try {
+			for (const v of await readLive(query)) noteLive(v);
+		} catch {
+			/* the next round reads again */
+		}
+	}, SAFETY_POLL_MS);
+	return () => clearInterval(timer);
 }

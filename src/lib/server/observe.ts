@@ -654,6 +654,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						performance: risk.performance,
 						startedAt: m.startedAt,
 						matchEnd,
+						recovered: wasOffline,
 						// the lines the match stage will write, for the broadcast's {mvp} and {top}
 						matchLines: matchEnd ? closeTallies(m.tallies, prevStatusAt).rows : [],
 						ts
@@ -687,6 +688,8 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	const needWrite =
 		presenceDue || ev.intents.length > 0 || ev.updates.length > 0 || liveDue || sampleDue;
 	let intents = 0;
+	/** watch-only rows written by this look, announced after the commit */
+	const watched: number[] = [];
 	let saved = false;
 	try {
 		if (needWrite)
@@ -702,7 +705,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						firstVisit,
 						teams
 					);
-				if (ev.intents.length) intents = await enqueueIntents(tx, server.id, ev.intents);
+				if (ev.intents.length) intents = await enqueueIntents(tx, server.id, ev.intents, watched);
 				if (ev.updates.length) await applyTriggerUpdates(tx, ev.updates);
 				if (liveDue) await writeLive(tx, m, ts);
 				if (sampleDue) await writeSample(tx, m, ts, latencyMs);
@@ -716,6 +719,8 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 			m.sampleWrittenAt = started;
 		}
 		for (const f of ev.afterCommit ?? []) f();
+		// A watch-only rule's rows never pass through delivery, which announces the rest.
+		for (const id of watched) emit({ type: 'outbox', serverId: server.id, id, state: 'skipped' });
 		if (riskWaitNote.length) m.riskWaitNoted = true;
 		// Swept only once the kicks it asked for are queued; a failed write sweeps again.
 		if (riskSweep) m.riskSweptAt = started;

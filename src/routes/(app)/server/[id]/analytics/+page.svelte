@@ -6,11 +6,12 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import PopulationChart from '$lib/components/PopulationChart.svelte';
 	import CashChart from '$lib/components/CashChart.svelte';
+	import PeriodChart, { periodName, type PeriodSeries } from '$lib/components/PeriodChart.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort } from '$lib/table.svelte';
 	import { factionColor } from '$lib/format';
 	import { causeLabel } from '$lib/causes';
-	import type { Analytics, Range } from '$lib/server/analytics';
+	import type { Analytics, PeriodPoint, Periods, Range } from '$lib/server/analytics';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -20,6 +21,9 @@
 	let loading = $state(false);
 	let view = $state<'chart' | 'table'>('chart');
 	let cashView = $state<'chart' | 'table'>('chart');
+	/** what the first chart shows: players online, or players or session lengths per period */
+	let shown = $state<'online' | 'players' | 'sessions'>('online');
+	let periods = $state<Periods | null>(null);
 
 	const playerSort = new TableSort<Analytics['players'][number]>({
 		player: { by: (p) => p.name },
@@ -80,6 +84,69 @@
 		return poll(load, 60000);
 	});
 
+	// The browser's time zone, so a day on the charts is the viewer's day.
+	const tz = (() => {
+		try {
+			return Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
+		} catch {
+			return '';
+		}
+	})();
+	async function loadPeriods() {
+		try {
+			const got = await api<Periods>(
+				'GET',
+				`/api/servers/${encodeURIComponent(id)}/analytics/periods?range=${range}&tz=${encodeURIComponent(tz)}`
+			);
+			// A slow answer for a range left since does not replace the one asked for now.
+			if (got.range === range) periods = got;
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		}
+	}
+	// Read only while a chart that shows it is open; both of them show the same read.
+	let perPeriod = $derived(shown !== 'online');
+	$effect(() => {
+		range;
+		if (perPeriod) return poll(loadPeriods, 60000);
+	});
+	let periodWord = $derived(range === '24h' ? 'hour' : 'day');
+	const SHOWN = [
+		['online', 'Players online'],
+		['players', 'Players per'],
+		['sessions', 'Session length']
+	] as const;
+	/** a length of time for an axis: "45 min", "1.5 h" */
+	const span = (s: number) =>
+		s <= 0
+			? '0'
+			: s < 60
+				? `${Math.round(s)} s`
+				: s < 3600
+					? `${Math.round(s / 60)} min`
+					: `${+(s / 3600).toFixed(1)} h`;
+	/** a length of time to read: "45 min", "1 h 36 min" */
+	const spanLong = (s: number) => {
+		if (s < 60) return `${Math.round(s)} s`;
+		const m = Math.round(s / 60);
+		return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+	};
+	const PLAYER_SERIES: PeriodSeries<PeriodPoint>[] = [
+		{ key: 'new', label: 'New', color: '#5b95d8', value: (p) => p.newPlayers },
+		{
+			key: 'returning',
+			label: 'Returning',
+			color: '#c98500',
+			value: (p) => p.players - p.newPlayers
+		}
+	];
+	const SESSION_SERIES: PeriodSeries<PeriodPoint>[] = [
+		{ key: 'avg', label: 'Average', color: '#d4a843', value: (p) => p.avgSessionS }
+	];
+	// Spacings that keep the axis on round lengths: 30 min, 1 h, 1.5 h rather than 1.3 h.
+	const DURATION_STEPS = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+	let periodRows = $derived(periods ? [...periods.periods].reverse() : []);
+
 	const RANGES: { key: Range; label: string }[] = [
 		{ key: '24h', label: '24 hours' },
 		{ key: '7d', label: '7 days' },
@@ -137,10 +204,26 @@
 
 	<div class="mb-4 panel">
 		<div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-			<span class="label-sm mb-0">Players online</span>
-			<span class="text-[12px] text-mist-600"
-				>average per {a.bucketSeconds / 60} min bucket · red bands are outages</span
-			>
+			<span class="join join-stack">
+				{#each SHOWN as [key, name] (key)}
+					<button
+						class="btn btn-sm {shown === key ? 'btn-primary' : ''}"
+						aria-pressed={shown === key}
+						onclick={() => (shown = key)}
+						>{name}{#if key === 'players'}&nbsp;{periodWord}{/if}</button
+					>
+				{/each}
+			</span>
+			{#if shown === 'online'}
+				<span class="text-[12px] text-mist-600"
+					>average per {a.bucketSeconds / 60} min bucket · red bands are outages</span
+				>
+			{:else if shown === 'sessions'}
+				<span class="text-[12px] text-mist-600">average per {periods?.unit ?? periodWord}</span>
+			{/if}
+			{#if periods && perPeriod && periods.tz !== tz}
+				<span class="text-[12px] text-mist-600">{periodWord}s in {periods.tz}</span>
+			{/if}
 			<span class="join ml-auto">
 				<button
 					class="btn btn-sm {view === 'chart' ? 'btn-primary' : ''}"
@@ -152,7 +235,82 @@
 				>
 			</span>
 		</div>
-		{#if view === 'chart'}
+		{#if shown !== 'online'}
+			{#if !periods}
+				<div class="py-10 text-center text-mist-600">Loading…</div>
+			{:else}
+				<div class="transition-opacity {periods.range !== range ? 'opacity-50' : ''}">
+					{#if view === 'table'}
+						<div class="max-h-[360px] table-wrap">
+							<table>
+								<thead>
+									<tr>
+										<th>{periods.unit === 'hour' ? 'Hour' : 'Day'}</th>
+										<th class="num">Players</th>
+										<th class="num">New</th>
+										<th class="num">Returning</th>
+										<th class="num">Sessions</th>
+										<th class="num">Average</th>
+										<th class="num">Median</th>
+									</tr>
+								</thead>
+								<tbody>
+									{#each periodRows as p, i (p.ts)}
+										<tr>
+											<td class="whitespace-nowrap"
+												>{periodName(p.ts, periods.unit, periods.tz)}{#if i === 0}<span
+														class="text-mist-600">&nbsp;· so far</span
+													>{/if}</td
+											>
+											<td class="num">{fmtNum(p.players)}</td>
+											<td class="num">{fmtNum(p.newPlayers)}</td>
+											<td class="num">{fmtNum(p.players - p.newPlayers)}</td>
+											<td class="num">{fmtNum(p.sessions)}</td>
+											<td class="num">{p.avgSessionS === null ? '—' : spanLong(p.avgSessionS)}</td>
+											<td class="num"
+												>{p.medianSessionS === null ? '—' : spanLong(p.medianSessionS)}</td
+											>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					{:else if shown === 'players' && !periods.periods.some((p) => p.players)}
+						<div class="py-10 text-center text-mist-600">No players in this range yet.</div>
+					{:else if shown === 'players'}
+						<PeriodChart
+							points={periods.periods}
+							series={PLAYER_SERIES}
+							unit={periods.unit}
+							tz={periods.tz}
+							format={fmtNum}
+							totalLabel="players"
+							label="Players per {periods.unit}, new and returning"
+						/>
+					{:else if !periods.periods.some((p) => p.sessions)}
+						<div class="py-10 text-center text-mist-600">No sessions ended in this range yet.</div>
+					{:else}
+						<PeriodChart
+							points={periods.periods}
+							series={SESSION_SERIES}
+							unit={periods.unit}
+							tz={periods.tz}
+							format={span}
+							tip={spanLong}
+							steps={DURATION_STEPS}
+							rows={(p) =>
+								p.medianSessionS === null
+									? []
+									: [
+											[spanLong(p.medianSessionS), 'median'],
+											[fmtNum(p.sessions), p.sessions === 1 ? 'session' : 'sessions']
+										]}
+							label="Average session length per {periods.unit}"
+						/>
+					{/if}
+				</div>
+			{/if}
+		{:else if view === 'chart'}
 			<PopulationChart points={a.population} {range} />
 		{:else}
 			<div class="max-h-[360px] table-wrap">

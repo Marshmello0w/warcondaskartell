@@ -8,8 +8,15 @@ import type { Env } from '$lib/server/env';
 import { auditLog, organizations, outbox, servers, triggers } from '$lib/server/db/schema';
 import { acquireOrRenew, ownedSince, releaseOwnership } from '$lib/server/leadership';
 import { forgetMemory, memoryFor, memoryOf } from '$lib/server/observe';
-import { startDelivery, stopDelivery } from '$lib/server/outbox';
-import { enabledTriggers, invalidateTriggers } from '$lib/server/triggers';
+import { enqueueIntents, startDelivery, stopDelivery } from '$lib/server/outbox';
+import {
+	enabledTriggers,
+	evaluateTriggers,
+	forgetRuleMemory,
+	invalidateTriggers,
+	type TickContext
+} from '$lib/server/triggers';
+import type { TriggerRow } from '$lib/server/db/schema';
 import { twoTeamsSettingsKey, validateTwoTeams } from '$lib/server/two-teams';
 import { GameError, WardogsClient } from '$lib/server/rcon';
 import type { Player } from '$lib/types';
@@ -169,6 +176,132 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		]);
 		expect(requests.slice(4)).toEqual([`PATCH /v1/players/${Y}`, `POST /v1/players/${Y}/kill`]);
 		await stopDelivery();
+	}, 30_000);
+
+	test('a dated move goes only while the rule holds it: unwritten it waits, superseded it is dropped', async () => {
+		forgetRuleMemory();
+		const A = '76561198000000904';
+		const B = '76561198000000905';
+		const m = memoryOf(w.server.id)!;
+		const rule = {
+			id: ruleId,
+			kind: 'two_teams',
+			name: 'Two teams',
+			config: LONESTAR,
+			state: null
+		} as unknown as TriggerRow;
+		const decide = (players: Player[], at: number) =>
+			evaluateTriggers(
+				env,
+				{
+					server: { id: w.server.id, name: 'Server' },
+					status: {
+						serverName: 'Server',
+						map: 'Map',
+						playerCount: players.length,
+						maxPlayers: 100,
+						scores: ['Lonestar', 'Valkyra', 'Manticore'].map((name) => ({
+							name,
+							colorHex: '',
+							score: 0
+						}))
+					},
+					players,
+					playersObserved: true,
+					playersIntervalMs: 1000,
+					ts: new Date(at)
+				} as unknown as TickContext,
+				[rule]
+			);
+		const queue = async (ev: Awaited<ReturnType<typeof decide>>) => {
+			await enqueueIntents(env.db, w.server.id, ev.intents);
+			return (
+				await env.db
+					.select({ id: outbox.id })
+					.from(outbox)
+					.where(
+						inArray(
+							outbox.dedupeKey,
+							ev.intents.map((i) => i.dedupeKey)
+						)
+					)
+			).map((r) => r.id);
+		};
+		m.players = [on(A, 'Lonestar'), on(B, 'Lonestar')];
+		m.playersAt = Date.now();
+		const from = requests.length;
+		try {
+			const t0 = Date.now();
+			// A's move is decided, its look not yet written: the row waits
+			const first = await decide([on(A, 'Lonestar')], t0);
+			const [waiting] = await queue(first);
+			startDelivery(env);
+			await until(async () => (await rowsOf([waiting]))[0].attempts > 0);
+			await Bun.sleep(300);
+			expect((await rowsOf([waiting]))[0].state).toBe('pending');
+			expect(requests.slice(from)).toEqual([]);
+			// written: it goes
+			for (const f of first.afterCommit ?? []) f();
+			await until(async () => (await rowsOf([waiting]))[0].doneAt !== null, 25_000);
+			expect((await rowsOf([waiting]))[0].state).toBe('delivered');
+			// B: decided, then decided again 15 s on (not seen landed); the first row is dropped, the
+			// second goes
+			const b1 = await decide([on(A, 'Valkyra'), on(B, 'Lonestar')], t0 + 30_000);
+			for (const f of b1.afterCommit ?? []) f();
+			const b2 = await decide([on(A, 'Valkyra'), on(B, 'Lonestar')], t0 + 45_000);
+			for (const f of b2.afterCommit ?? []) f();
+			m.players = [on(A, 'Valkyra'), on(B, 'Lonestar')];
+			m.playersAt = Date.now();
+			const ids = [...(await queue(b1)), ...(await queue(b2))];
+			await until(async () => (await rowsOf(ids)).every((r) => r.doneAt !== null), 25_000);
+			expect((await rowsOf(ids)).map((r) => [r.state, r.outcome])).toEqual([
+				['skipped', 'No longer wanted by the rule.'],
+				// A is on Valkyra in these lists, so B goes to Manticore
+				['delivered', 'Moved to Manticore and killed, so they respawn on the new side.']
+			]);
+			expect(requests.slice(from)).toEqual([
+				`PATCH /v1/players/${A}`,
+				`POST /v1/players/${A}/kill`,
+				`PATCH /v1/players/${B}`,
+				`POST /v1/players/${B}/kill`
+			]);
+		} finally {
+			await stopDelivery();
+			forgetRuleMemory();
+		}
+	}, 60_000);
+
+	test('a move decided before the rule was switched off and on again is dropped in the lane', async () => {
+		const m = memoryOf(w.server.id)!;
+		const C = '76561198000000906';
+		const D = '76561198000000907';
+		m.players = [on(C, 'Lonestar'), on(D, 'Lonestar')];
+		m.playersAt = Date.now();
+		const from = requests.length;
+		try {
+			// the rule's row holds no switch-on marker: one row was decided under another switch-on
+			const ids = (
+				await env.db
+					.insert(outbox)
+					.values([
+						{ ...move(C), params: { ...move(C).params, on: 1234 } },
+						{ ...move(D), params: { ...move(D).params, on: null } }
+					])
+					.returning({ id: outbox.id })
+			).map((r) => r.id);
+			startDelivery(env);
+			await until(async () => (await rowsOf(ids)).every((r) => r.doneAt !== null));
+			expect((await rowsOf(ids)).map((r) => [r.state, r.outcome])).toEqual([
+				['skipped', 'The rule was changed before this was sent.'],
+				['delivered', 'Moved to Valkyra and killed, so they respawn on the new side.']
+			]);
+			expect(requests.slice(from)).toEqual([
+				`PATCH /v1/players/${D}`,
+				`POST /v1/players/${D}/kill`
+			]);
+		} finally {
+			await stopDelivery();
+		}
 	}, 30_000);
 
 	test('a move whose kill is refused for sending too fast says so, and holds the server', async () => {

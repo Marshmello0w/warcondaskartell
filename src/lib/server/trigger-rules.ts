@@ -11,6 +11,8 @@ import { causeTags } from './cause-tags';
 import { RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
 import { MAX_CHAT } from '$lib/chat';
 import { TEAM_KILL_NOT_COUNTED } from '$lib/causes';
+import { mapName } from '$lib/format';
+import { UNKNOWN } from './message-vars';
 import type { SteamProfileRow } from './db/schema';
 import type { TriggerKind } from '$lib/types';
 
@@ -43,7 +45,7 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	match_broadcast: 'Match broadcast',
 	name_filter: 'Name filter',
 	kill_rate: 'Kill rate watch',
-	two_teams: 'Two-team mode',
+	two_teams: 'Team balance',
 	kill_distance: 'Kill distance watch'
 };
 
@@ -658,28 +660,33 @@ export interface MatchLineVars {
 /**
  * The placeholders a match boundary fills: the result of the match that ended, and from the
  * players' lines of it, `{mvp}` (the most kills, tied players named together) and `{top}` (the
- * top three with their kills). Both are empty when nobody killed anyone.
+ * top three with their kills). Both are empty when nobody killed anyone, and `…` when the lines
+ * are not known (`null`: the dry run's samples hold none).
  */
 export function matchVars(
 	end: MatchEnd,
-	lines: MatchLineVars[] = []
+	lines: MatchLineVars[] | null = []
 ): Record<string, string | number> {
 	const top = end.scores[0]?.score ?? 0;
-	const ranked = lines.filter((l) => l.kills > 0).sort((a, b) => b.kills - a.kills);
+	const ranked = (lines ?? []).filter((l) => l.kills > 0).sort((a, b) => b.kills - a.kills);
 	const best = ranked[0]?.kills ?? 0;
 	return {
 		faction: end.leaders.join(' and '),
 		score: top,
 		scores: end.scores.map((f) => `${f.name} ${f.score}`).join(' · '),
-		previous: end.map,
-		mvp: ranked
-			.filter((l) => l.kills === best)
-			.map((l) => l.name)
-			.join(' and '),
-		top: ranked
-			.slice(0, 3)
-			.map((l) => `${l.name} ${l.kills}`)
-			.join(' · ')
+		previous: end.map ? mapName(end.map) : '',
+		mvp: lines
+			? ranked
+					.filter((l) => l.kills === best)
+					.map((l) => l.name)
+					.join(' and ')
+			: UNKNOWN,
+		top: lines
+			? ranked
+					.slice(0, 3)
+					.map((l) => `${l.name} ${l.kills}`)
+					.join(' · ')
+			: UNKNOWN
 	};
 }
 
@@ -692,7 +699,7 @@ export function matchBroadcastMessages(
 	end: MatchEnd,
 	playerCount: number,
 	vars: Record<string, string | number>,
-	lines: MatchLineVars[] = []
+	lines: MatchLineVars[] | null = []
 ): { stage: 'end' | 'start'; message: string }[] {
 	if (playerCount < cfg.minPlayers) return [];
 	const all = { ...vars, ...matchVars(end, lines) };
@@ -799,19 +806,24 @@ export const factionChangeTargets = <P>(tick: { factioned: FactionPick<P>[] }): 
 	tick.factioned.filter((f) => !!f.from);
 
 /**
- * Fills {name}, {faction}, {previous}, {server}, {map}, {players}, {max} and the rest; unknown ones
- * stay. The result is cut at `max`: MAX_CHAT for a whisper or broadcast, MAX_REASON for a kick.
+ * Fills the placeholders in `vars` (message-vars.ts builds them, $lib/placeholders lists them), in
+ * any case; unknown ones stay as typed. One pass, so a value that looks like a placeholder (a
+ * player named "{steamid}") is never filled in turn. The result is cut at `max`: MAX_CHAT for a
+ * whisper or broadcast, MAX_REASON for a kick.
  */
 export function renderTemplate(
 	text: string,
 	vars: Record<string, string | number>,
 	max: number
 ): string {
-	const lower: Record<string, string> = {};
-	for (const [k, v] of Object.entries(vars)) lower[k.toLowerCase()] = String(v);
-	return text
-		.replace(/\{([a-z_]+)\}/gi, (m, key: string) => lower[key.toLowerCase()] ?? m)
+	// a Map, so a name every object has ({constructor}) is no placeholder
+	const lower = new Map(Object.entries(vars).map(([k, v]) => [k.toLowerCase(), String(v)]));
+	const out = text
+		.replace(/\{([a-z_]+)\}/gi, (m, key: string) => lower.get(key.toLowerCase()) ?? m)
 		.slice(0, max);
+	// The cut counts UTF-16 units, on the safe side of the game's own count, so it can land inside
+	// an emoji: half a character is dropped rather than sent.
+	return /[\uD800-\uDBFF]$/.test(out) ? out.slice(0, -1) : out;
 }
 
 export interface RiskKickSignals {

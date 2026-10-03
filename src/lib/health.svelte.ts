@@ -10,6 +10,13 @@ export const identity = $state<
 	Record<string, { build: string; gameServerId: string; startedAt: string | null }>
 >({});
 
+export interface Occupancy {
+	players: number;
+	max: number;
+}
+/** Players on each server as of the last look; null while the last look failed. */
+export const occupancy = $state<Record<string, Occupancy | null>>({});
+
 export function setHealth(id: string, ok: boolean) {
 	// untrack: an $effect that calls this must not depend on the value it is about to overwrite,
 	// or every poll-driven change would re-run it and restore the old value.
@@ -36,6 +43,10 @@ export function noteLive(v: LiveView) {
 				Math.max(0, Date.parse(until) - Date.now())
 			)
 		);
+	const occ = v.ok && v.status ? { players: v.status.playerCount, max: v.status.maxPlayers } : null;
+	const had = untrack(() => occupancy[v.serverId]);
+	if (had === undefined || had?.players !== occ?.players || had?.max !== occ?.max)
+		occupancy[v.serverId] = occ;
 	if (v.build || v.gameServerId || v.startedAt) {
 		const cur = untrack(() => identity[v.serverId]);
 		if (

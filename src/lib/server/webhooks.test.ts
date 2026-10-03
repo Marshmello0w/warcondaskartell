@@ -196,7 +196,7 @@ describe('buildTeamKillEmbed', () => {
 		});
 		expect(e.title).toBe('Team kill');
 		expect(e.description).toBe(
-			'**Alpha** → **Bravo** (Valkyra)\nAK-74M · 40 m · headshot\nServer: TLR #1 · Kavkazi'
+			'**Alpha** → **Bravo** (Valkyra)\nAK74 · 40 m · headshot\nServer: TLR #1 · Kavkazi'
 		);
 		expect(e.timestamp).toBe('2026-09-16T20:00:00.000Z');
 		expect(e.footer?.text).toBe('Warcon');

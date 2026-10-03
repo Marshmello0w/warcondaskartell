@@ -13,9 +13,15 @@ import {
 	enabledTriggers,
 	killDistanceAct,
 	renderTemplate,
+	statsFor,
+	statsOf,
+	statsReader,
 	teamKillStage,
-	type Evaluation
+	type Evaluation,
+	type StatsRead
 } from './triggers';
+import { messageVars, serverVars, type MessageVars } from './message-vars';
+import { mapName } from '$lib/format';
 import { countsForTeamKill, MAX_REASON, type TeamKillConfig } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
 import {
@@ -46,7 +52,7 @@ import { isDemoServer } from './env';
 import { drainMockFeed } from './mockgame';
 import { ingestBatch } from './feed';
 import { servers, type ServerRow } from './db/schema';
-import type { KillView } from '$lib/types';
+import type { KillView, Player } from '$lib/types';
 
 export async function onKillsIngested(
 	env: Env,
@@ -61,8 +67,10 @@ export async function onKillsIngested(
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] kill-rate rules on ${serverId}:`, publicMessage(err));
 	}
+	// what the rules' texts say about a killer, their stats read once for the whole batch
+	const vars = killerVars(env, serverId);
 	try {
-		await actOnKillDistance(env, serverId, kills);
+		await actOnKillDistance(env, serverId, kills, vars);
 	} catch (err) {
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] kill-distance rules on ${serverId}:`, publicMessage(err));
@@ -72,7 +80,7 @@ export async function onKillsIngested(
 	const m = memoryOf(serverId);
 	void notifyTeamKills(env, serverId, m?.status?.serverName || m?.server.name || '', teamKills);
 	try {
-		await actOnTeamKills(env, serverId, teamKills);
+		await actOnTeamKills(env, serverId, teamKills, vars);
 	} catch (err) {
 		if (err instanceof LostOwnership) return;
 		console.warn(`[warcon] team-kill rules on ${serverId}:`, publicMessage(err));
@@ -191,7 +199,12 @@ async function stampedMatch(env: Env, serverId: string, batch: KillView[]): Prom
 	return stamp?.row ?? null;
 }
 
-async function actOnKillDistance(env: Env, serverId: string, batch: KillView[]): Promise<void> {
+async function actOnKillDistance(
+	env: Env,
+	serverId: string,
+	batch: KillView[],
+	vars: KillerVars
+): Promise<void> {
 	const rows = (await enabledTriggers(env, serverId)).filter((r) => r.kind === 'kill_distance');
 	let mine = distanceMemory.get(serverId);
 	if (!rows.length) {
@@ -221,8 +234,6 @@ async function actOnKillDistance(env: Env, serverId: string, batch: KillView[]):
 	const now = Date.now();
 	const match = matchKey(await stampedMatch(env, serverId, batch), Date.parse(batch[0].ts));
 	if (!mine) distanceMemory.set(serverId, (mine = new Map()));
-	const m = memoryOf(serverId);
-	const serverName = m?.status?.serverName || m?.server.name || '';
 	const out: Evaluation = { intents: [], updates: [] };
 	// Acting starts the player's hold; if the action cannot be queued, neither does the hold.
 	const acted: { track: DistanceTrack; before: number | null }[] = [];
@@ -233,18 +244,28 @@ async function actOnKillDistance(env: Env, serverId: string, batch: KillView[]):
 			entry = { settings, match, tracks: new Map() };
 			mine.set(row.id, entry);
 		}
+		const caught: { k: KillView; steamId: string; count: number }[] = [];
 		for (const k of hits) {
 			const steamId = k.killer!.steamId;
 			const before = entry.tracks.get(steamId)?.actedAt ?? null;
 			const count = killDistanceStep(cfg, entry.tracks, steamId, now);
 			if (count === null) continue;
 			acted.push({ track: entry.tracks.get(steamId)!, before });
+			caught.push({ k, steamId, count });
+		}
+		// a flag tells the player nothing; the rule's one text can be a ban reason, kept where staff
+		// read it, so it has no org-wide stats whatever the action
+		const stats = await vars.stats(
+			cfg.action === 'flag' ? [] : caught.map((c) => ({ steamId: c.steamId, text: cfg.reason })),
+			{ org: false }
+		);
+		for (const { k, steamId, count } of caught) {
 			const name = k.killer!.name || steamId;
 			const act = killDistanceAct(
 				cfg,
-				{ steamId, name, cause: k.cause, distanceM: k.distanceM! },
+				{ steamId, name, cause: k.cause, distanceM: k.distanceM },
 				count,
-				serverName
+				vars.of(k, stats, k.map ? { map: mapName(k.map) } : {})
 			);
 			out.intents.push({
 				trigger: row,
@@ -273,6 +294,53 @@ async function actOnKillDistance(env: Env, serverId: string, batch: KillView[]):
 	}
 	if (queued) wakeDelivery();
 }
+
+/**
+ * The placeholders of a message about a kill's killer: the server as the worker last saw it, the
+ * killer (their side as the kill has it, their ping from the last player list) and their stats,
+ * read once per player for the whole batch, whichever rules ask. Nothing is looked at until a rule
+ * acts.
+ */
+function killerVars(env: Env, serverId: string) {
+	let seen: { server: MessageVars; live: Map<string, Player> } | null = null;
+	const look = () => {
+		if (seen) return seen;
+		const m = memoryOf(serverId);
+		seen = {
+			server: serverVars({
+				name: m?.server.name ?? '',
+				status: m?.status ?? null,
+				startedAt: m?.startedAt ?? 0,
+				now: Date.now()
+			}),
+			live: new Map((m?.players ?? []).map((p) => [p.steamId, p]))
+		};
+		return seen;
+	};
+	const read = statsReader(env, serverId);
+	return {
+		/** what these killers' texts tell them of their stats; nothing is read for none */
+		stats: (wants: { steamId: string; text: string }[], sides?: { org: boolean }) =>
+			statsFor(read, wants, sides),
+		of: (k: KillView, stats: StatsRead, own: MessageVars): MessageVars => {
+			const { server, live } = look();
+			const steamId = k.killer!.steamId;
+			const p = live.get(steamId);
+			return messageVars(
+				server,
+				{
+					name: k.killer!.name || steamId,
+					steamId,
+					faction: k.killer!.faction ?? p?.faction ?? null,
+					ping: p?.ping
+				},
+				statsOf(stats, steamId),
+				own
+			);
+		}
+	};
+}
+type KillerVars = ReturnType<typeof killerVars>;
 
 /** A player's team kills in a match by one cause (null for none), as a rule counts them. */
 interface CauseCount {
@@ -334,7 +402,12 @@ async function teamKillsThisMatch(
 	return out;
 }
 
-async function actOnTeamKills(env: Env, serverId: string, teamKills: KillView[]): Promise<void> {
+async function actOnTeamKills(
+	env: Env,
+	serverId: string,
+	teamKills: KillView[],
+	vars: KillerVars
+): Promise<void> {
 	// Each rule acts on the last team kill of each killer in the batch that it counts; a batch
 	// whose team kills no rule counts reads nothing.
 	const rules = (await enabledTriggers(env, serverId))
@@ -348,28 +421,30 @@ async function actOnTeamKills(env: Env, serverId: string, teamKills: KillView[])
 		})
 		.filter((r) => r.byKiller.size);
 	if (!rules.length) return;
-	const m = memoryOf(serverId);
-	const serverName = m?.status?.serverName || m?.server.name || '';
 	const out: Evaluation = { intents: [], updates: [] };
 	const counts = await teamKillsThisMatch(env, serverId, teamKills, [
 		...new Set(rules.flatMap((r) => [...r.byKiller.keys()]))
 	]);
-	for (const { row, cfg, byKiller } of rules)
-		for (const [steamId, k] of byKiller) {
+	for (const { row, cfg, byKiller } of rules) {
+		const acts = [...byKiller].flatMap(([steamId, k]) => {
 			const count = (counts.get(steamId) ?? []).reduce(
 				(n, c) => (countsForTeamKill(cfg, c.cause) ? n + c.n : n),
 				0
 			);
-			const v = {
-				name: k.killer!.name,
+			const stage = teamKillStage(cfg, count);
+			return stage ? [{ steamId, k, count, kick: stage === 'kick' }] : [];
+		});
+		const stats = await vars.stats(
+			acts.map((a) => ({ steamId: a.steamId, text: a.kick ? cfg.kickReason : cfg.warnMessage }))
+		);
+		for (const { steamId, k, count, kick } of acts) {
+			const name = k.killer!.name;
+			// the map the kill was on, which a map change can leave behind the server's
+			const v = vars.of(k, stats, {
 				victim: k.victim.name,
 				count,
-				server: serverName,
-				map: k.map
-			};
-			const stage = teamKillStage(cfg, count);
-			if (!stage) continue;
-			const kick = stage === 'kick';
+				...(k.map ? { map: mapName(k.map) } : {})
+			});
 			const text = kick
 				? renderTemplate(cfg.kickReason, v, MAX_REASON)
 				: renderTemplate(cfg.warnMessage, v, MAX_CHAT);
@@ -379,18 +454,19 @@ async function actOnTeamKills(env: Env, serverId: string, teamKills: KillView[])
 				params: kick ? { steamId, reason: text } : { steamId, message: text },
 				target: steamId,
 				okMessage: kick
-					? `Kicked ${v.name} after ${count} team kill${count === 1 ? '' : 's'}`
-					: `Whispered ${v.name} (${count} team kill${count === 1 ? '' : 's'})`,
-				detail: { name: v.name, victim: v.victim, count, eventId: k.eventId },
+					? `Kicked ${name} after ${count} team kill${count === 1 ? '' : 's'}`
+					: `Whispered ${name} (${count} team kill${count === 1 ? '' : 's'})`,
+				detail: { name, victim: k.victim.name, count, eventId: k.eventId },
 				steamId,
 				dedupeKey: [row.id, steamId, k.eventId].join(':')
 			});
 			out.updates.push({
 				id: row.id,
 				lastFiredAt: new Date(),
-				lastResult: kick ? `Kicking ${v.name} (${count})` : `Whispering ${v.name} (${count})`
+				lastResult: kick ? `Kicking ${name} (${count})` : `Whispering ${name} (${count})`
 			});
 		}
+	}
 	if (!out.intents.length) return;
 	let queued = 0;
 	await withOwnedTransaction(env, async (tx) => {

@@ -72,7 +72,7 @@ describe.skipIf(!hasTestDb)("a server's own bans", () => {
 			id: roleId,
 			orgId: w.org.id,
 			name: 'Moderator',
-			capabilities: ['server.view', 'players.moderate', 'bans.manage']
+			capabilities: ['server.view', 'players.kick', 'bans.manage']
 		});
 		await env.db.insert(orgMembers).values({ orgId: w.org.id, userId: id, role: 'member' });
 		await env.db.insert(serverGrants).values({ serverId: w.server.id, userId: id, roleId });

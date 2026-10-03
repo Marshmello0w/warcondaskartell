@@ -12,6 +12,7 @@ import { sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { servers } from './db/schema';
 import type { RiskPerformance } from './risk';
+import type { PlayerStats } from './message-vars';
 import {
 	BOARD_PAGE,
 	DEFAULT_FLOOR_MINUTES,
@@ -62,16 +63,18 @@ const lines = (ids: string[], from: Date, steamId: string | string[] | null) => 
  * Per-player totals over these servers since `from`: playtime, seed time, the last look and
  * cash summed over sessions; matches, results, kills, deaths and the feed's columns from
  * the match lines; joined on the SteamID, so a player seen by one source only still gets a row.
+ * `steamIds` narrows it to those players, with the same totals.
  */
-const base = (ids: string[], from: Date) => sql`
+const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sql`
 	sess AS (
 		SELECT steam_id,
 		       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - GREATEST(joined_at, ${from}::timestamptz)))) / 60 AS minutes,
 		       SUM(seed_seconds) / 60.0 AS seed_minutes, MAX(last_seen) AS last_seen,
 		       SUM(cash) AS cash
 		  FROM player_sessions WHERE server_id IN ${ids} AND last_seen >= ${from}
+		   ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}
 		 GROUP BY steam_id),
-	${lines(ids, from, null)},
+	${lines(ids, from, steamIds)},
 	mt AS (
 		SELECT steam_id, COUNT(*) AS matches,
 		       SUM(kills) AS kills, SUM(deaths) AS deaths, SUM(headshots) AS headshots,
@@ -280,6 +283,47 @@ const shapeRow = (r: BaseRow, rank: number): BoardRow => ({
 	cash: num(r.cash),
 	lastSeen: iso(r.lastSeen)
 });
+
+/**
+ * These players' lines on the all-time board over these servers (one server's, or its
+ * organisation's), the numbers that board shows them, for the message placeholders. A player
+ * those servers have no record of has no entry.
+ */
+export async function playerStats(
+	env: Env,
+	ids: string[],
+	steamIds: string[]
+): Promise<Map<string, PlayerStats>> {
+	const out = new Map<string, PlayerStats>();
+	if (!ids.length || !steamIds.length) return out;
+	const rows = await env.db.execute<{
+		steamId: string;
+		minutes: string;
+		seedMinutes: string;
+		kills: string;
+		deaths: string;
+		matches: string;
+		wins: string;
+		losses: string;
+		draws: string;
+	}>(sql`
+		WITH ${base(ids, EPOCH, steamIds)}
+		SELECT steam_id AS "steamId", minutes, seed_minutes AS "seedMinutes", kills, deaths,
+		       matches, wins, losses, draws
+		  FROM base`);
+	for (const r of rows)
+		out.set(r.steamId, {
+			kills: num(r.kills),
+			deaths: num(r.deaths),
+			minutes: num(r.minutes),
+			seedMinutes: num(r.seedMinutes),
+			matches: num(r.matches),
+			wins: num(r.wins),
+			losses: num(r.losses),
+			draws: num(r.draws)
+		});
+	return out;
+}
 
 /** The name the player was last seen with on these servers; null when never seen there. */
 export async function lastNameOf(env: Env, ids: string[], steamId: string): Promise<string | null> {

@@ -1,11 +1,12 @@
 // The Kill distance rule's pure part: which kills it counts (one of the chosen weapons, from at
 // least a distance), how many of them in one match catch a player, and what it keeps per player. A
 // defibrillator or a fist reaches a few metres; the same kill from across the map is a player the
-// game did not stop. Kills are counted per match, as the Team kill limit counts them, rather than
-// within minutes: the feed gives no kill a time the panel can trust across batches (a batch the
-// game sends again arrives late, with only the match clock), and a match is what the game itself
-// numbers. No database, no game server; the live path (feed-events.ts) and the dry run
-// (triggers.ts) run the same step.
+// game did not stop. From 0 m it counts every kill with the weapons, so a server can act on each
+// kill with a weapon or a vehicle it does not allow. Kills are counted per match, as the Team kill
+// limit counts them, rather than within minutes: the feed gives no kill a time the panel can trust
+// across batches (a batch the game sends again arrives late, with only the match clock), and a
+// match is what the game itself numbers. No database, no game server; the live path
+// (feed-events.ts) and the dry run (triggers.ts) run the same step.
 import { ApiError, int, str } from './http';
 import { causeTags } from './cause-tags';
 import { settingsFingerprint } from './fingerprint';
@@ -15,12 +16,15 @@ import type { BanScope } from './rule-ban';
 /** The outbox action of a Kill distance flag: a panel action, nothing is sent to the game. */
 export const KILL_DISTANCE_FLAG = 'kill_distance_flag';
 
-export type KillDistanceAction = 'flag' | 'kick' | 'ban';
+export type KillDistanceAction = 'flag' | 'warn' | 'kick' | 'ban';
 
 export interface KillDistanceConfig {
-	/** the weapons, as the kill feed tags them (`Id.Item.Defibrillator.Standard`); matched in any case */
+	/**
+	 * the weapons, their own or a vehicle's, or the vehicles, as the kill feed tags them
+	 * (`Id.Item.Defibrillator.Standard`); matched in any case
+	 */
 	causes: string[];
-	/** a kill counts from this far, in metres */
+	/** a kill counts from this far, in metres; from 0 every kill does, one without a distance too */
 	minDistanceM: number;
 	/** this many counted kills in one match catch a player */
 	count: number;
@@ -28,9 +32,9 @@ export interface KillDistanceConfig {
 	/** how long a ban lasts; 0 is for good */
 	banDays: number;
 	banScope: BanScope;
-	/** the kick reason, or the ban's: {name} {weapon} {distance} {count} {server} */
+	/** what the player is told: the warning whispered, or the kick or ban reason */
 	reason: string;
-	/** a flagged player is not flagged again by the rule for this long */
+	/** a flagged or warned player is not flagged or warned again by the rule for this long */
 	cooldownMinutes: number;
 }
 
@@ -41,7 +45,7 @@ export interface KillDistanceConfig {
  */
 export const killDistanceAction = (c: unknown): KillDistanceAction => {
 	const a = c && typeof c === 'object' ? (c as Record<string, unknown>).action : undefined;
-	return a === 'kick' || a === 'ban' ? a : 'flag';
+	return a === 'warn' || a === 'kick' || a === 'ban' ? a : 'flag';
 };
 /** Which list a rule's ban goes on: the organisation's only when asked for by name. */
 export const killDistanceBanScope = (c: unknown): BanScope =>
@@ -52,14 +56,20 @@ export const killDistanceBanScope = (c: unknown): BanScope =>
 export function validateKillDistance(c: Record<string, unknown>): KillDistanceConfig {
 	const causes = causeTags(c.causes, 'weapon', 'Id.Item.Defibrillator.Standard');
 	if (!causes.length) throw new ApiError(400, 'Pick at least one weapon.');
+	const action = killDistanceAction(c);
 	return {
 		causes,
-		minDistanceM: int(c.minDistanceM, 100, 1, 20_000),
+		minDistanceM: int(c.minDistanceM, 100, 0, 20_000),
 		count: int(c.count, 2, 1, 100),
-		action: killDistanceAction(c),
+		action,
 		banDays: int(c.banDays, 0, 0, 3650),
 		banScope: killDistanceBanScope(c),
-		reason: str(c.reason, 200) || 'Impossible kill: {weapon} from {distance} m.',
+		// a text left blank: a warning says what is not allowed, a kick or ban why
+		reason:
+			str(c.reason, 200) ||
+			(action === 'warn'
+				? '{weapon} is not allowed on this server.'
+				: 'Impossible kill: {weapon} from {distance} m.'),
 		cooldownMinutes: int(c.cooldownMinutes, 30, 1, 24 * 60)
 	};
 }
@@ -80,7 +90,11 @@ function causeSet(cfg: KillDistanceConfig): Set<string> {
 	return set;
 }
 
-/** A kill the rule counts: a player's, not a suicide, with one of its weapons, from at least its distance. */
+/**
+ * A kill the rule counts: a player's, not a suicide, with one of its weapons, from at least its
+ * distance. From 0 m a kill the feed sends without a distance counts too: a vehicle blown up with
+ * its crew inside, a roadkill.
+ */
 export function countsForDistance(
 	cfg: KillDistanceConfig,
 	k: {
@@ -93,8 +107,8 @@ export function countsForDistance(
 	return (
 		!!k.killer &&
 		!k.suicide &&
-		typeof k.distanceM === 'number' &&
-		k.distanceM >= cfg.minDistanceM &&
+		(cfg.minDistanceM <= 0 ||
+			(typeof k.distanceM === 'number' && k.distanceM >= cfg.minDistanceM)) &&
 		!!k.cause &&
 		causeSet(cfg).has(k.cause.toLowerCase())
 	);
@@ -122,7 +136,7 @@ export type DistanceTracks = Map<string, DistanceTrack>;
 export const ACT_AGAIN_MS = 60_000;
 
 const holdMs = (cfg: KillDistanceConfig): number =>
-	cfg.action === 'flag' ? cfg.cooldownMinutes * 60_000 : ACT_AGAIN_MS;
+	cfg.action === 'flag' || cfg.action === 'warn' ? cfg.cooldownMinutes * 60_000 : ACT_AGAIN_MS;
 
 /**
  * Counts one more kill of the player's in the match, taken in at `now` (ms, the panel's clock),
@@ -148,14 +162,20 @@ export function killDistanceStep(
 	return t.count;
 }
 
-/** What caught the player, in words: the kill, and how many this match when more than one was asked for. */
+/**
+ * What caught the player, in words: the kill, from how far when the feed said, and how many this
+ * match when more than one was asked for.
+ */
 export function killDistanceVerdict(
 	cfg: KillDistanceConfig,
 	cause: string | null,
-	distanceM: number,
+	distanceM: number | null,
 	count: number
 ): string {
-	const what = `${causeLabel(cause)} kill from ${Math.round(distanceM)} m`;
+	const what =
+		distanceM === null
+			? `${causeLabel(cause)} kill`
+			: `${causeLabel(cause)} kill from ${Math.round(distanceM)} m`;
 	return cfg.count > 1 ? `${what} (${count} this match)` : what;
 }
 
@@ -167,7 +187,7 @@ export interface DistanceKill {
 	steamId: string;
 	name: string;
 	cause: string | null;
-	distanceM: number;
+	distanceM: number | null;
 }
 
 /**
