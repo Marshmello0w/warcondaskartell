@@ -275,6 +275,7 @@ scraped as job `postgres`, which is optional.
 | `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`                | unset                  | Cloudflare Turnstile challenge on the username-and-password sign-up forms (invite links and `/sign-up`). Recommended with `ALLOW_ORG_SIGNUP`.                                     |
 | `ALLOW_DEMO_SERVER`                                          | `true`                 | Allow a server with host `demo` served by the built-in mock.                                                                                                                      |
 | `GAME_TLS_INSECURE`                                          | `false`                | Accept self-signed certificates on `https` game servers.                                                                                                                          |
+| `SUPPORT_URL`                                                | unset                  | A donation page, linked as "Support <APP_NAME>" in the page footers. Nothing is shown when it is unset or not an `https` URL.                                                     |
 | `SETUP_TOKEN`                                                | unset                  | When set, first-run setup requires it.                                                                                                                                            |
 | `STEAM_API_KEY`                                              | unset                  | Steam lookups: persona and avatar, account age, VAC and game bans, for dossiers, the risk score and the kick-on-connect trigger. Free at <https://steamcommunity.com/dev/apikey>. |
 | `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`                | unset                  | "Sign in with Discord": invite links create accounts through it, existing accounts can link it. OAuth redirect: `<ORIGIN>/api/auth/callback/discord`. Steam sign-in needs no key. |
@@ -1345,6 +1346,11 @@ other people using it is not a conversation this project will have.
 
 The protocol notes in [docs/wardogs-api.md](docs/wardogs-api.md) describe what the game server
 exposes; anything not in there is unknown to Warcon as well.
+
+## Supporting Warcon
+
+Warcon is free and open source. If it helps your community, you can support it through
+[GitHub Sponsors](https://github.com/sponsors/xCausxn).
 
 ## Layout
 
