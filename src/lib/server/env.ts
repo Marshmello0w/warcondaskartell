@@ -55,6 +55,8 @@ export interface Env {
 	POLL_CONCURRENCY?: string;
 	/** Bearer for GET /metrics (Prometheus) on the web and worker processes; the endpoint is off when unset. */
 	METRICS_TOKEN?: string;
+	/** Optional: an https donation page, linked from the page footers; nothing is shown when unset. */
+	SUPPORT_URL?: string;
 }
 
 export type Role = 'all' | 'web' | 'worker';
@@ -91,6 +93,18 @@ export const turnstileSiteKey = (
 	env: Pick<Env, 'TURNSTILE_SITE_KEY' | 'TURNSTILE_SECRET_KEY'>
 ): string | null =>
 	env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY ? env.TURNSTILE_SITE_KEY : null;
+
+/** The footers' support link: SUPPORT_URL when it is an https URL, else null (no link). */
+export function supportUrl(env: Pick<Env, 'SUPPORT_URL'>): string | null {
+	const value = env.SUPPORT_URL?.trim();
+	if (!value) return null;
+	try {
+		const url = new URL(value);
+		return url.protocol === 'https:' ? url.href : null;
+	} catch {
+		return null;
+	}
+}
 
 /** Host name of the built-in mock game server (when ALLOW_DEMO_SERVER is on). */
 export const DEMO_HOST = 'demo';
@@ -192,6 +206,7 @@ export async function initEnv(opts: { role?: Role } = {}): Promise<Env> {
 		ALLOW_ORG_SIGNUP: processEnv.ALLOW_ORG_SIGNUP,
 		MAX_ORGS_PER_USER: processEnv.MAX_ORGS_PER_USER,
 		METRICS_TOKEN: processEnv.METRICS_TOKEN,
+		SUPPORT_URL: processEnv.SUPPORT_URL,
 		MAX_SERVERS_PER_ORG: processEnv.MAX_SERVERS_PER_ORG,
 		TURNSTILE_SITE_KEY: processEnv.TURNSTILE_SITE_KEY,
 		TURNSTILE_SECRET_KEY: processEnv.TURNSTILE_SECRET_KEY,
