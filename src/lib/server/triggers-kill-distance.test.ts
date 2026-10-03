@@ -1,9 +1,10 @@
 // What a Kill distance rule needs of whoever saves it, for each thing it can do, and what it asks
 // for when it catches someone.
 import { describe, expect, test } from 'bun:test';
-import { killDistanceAct, ruleNeeds, validateConfig } from './triggers';
+import { killDistanceAct, requireRuleCaps, ruleNeeds, validateConfig } from './triggers';
 import { KILL_DISTANCE_FLAG, type KillDistanceConfig } from './kill-distance';
 import { PANEL_BAN } from './rule-ban';
+import { RULE_KILL } from './rule-kill';
 import { messageVars } from './message-vars';
 import { MAX_CHAT } from '$lib/chat';
 
@@ -13,14 +14,30 @@ const rule = (c: Record<string, unknown>) =>
 	validateConfig('kill_distance', { causes: [DEFIB], ...c }) as KillDistanceConfig;
 
 describe('ruleNeeds for a Kill distance rule', () => {
-	test('a flag or a kick needs Kick, a warning Chat; a ban needs what a ban by hand on that list needs', () => {
+	test('a flag or a kick needs Kick, a warning Chat, a kill Kill (and Chat, for its whisper); a ban needs what a ban by hand on that list needs', () => {
 		expect(ruleNeeds('kill_distance', rule({ action: 'flag' }))[0]).toBe('players.kick');
 		expect(ruleNeeds('kill_distance', rule({ action: 'warn' }))[0]).toBe('chat.send');
+		expect(ruleNeeds('kill_distance', rule({ action: 'kill' }))[0]).toBe('players.kill');
 		expect(ruleNeeds('kill_distance', rule({ action: 'kick' }))[0]).toBe('players.kick');
 		expect(ruleNeeds('kill_distance', rule({ action: 'ban' }))[0]).toBe('bans.manage');
 		expect(ruleNeeds('kill_distance', rule({ action: 'ban', banScope: 'org' }))[0]).toBe(
 			'lists.ban'
 		);
+	});
+	test('a kill needs Kill and Chat both', () => {
+		const server = { name: 'Example #1' } as Parameters<typeof requireRuleCaps>[2];
+		const holding = (...caps: string[]) =>
+			({ caps: new Set(caps), roleName: 'custom' }) as unknown as Parameters<
+				typeof requireRuleCaps
+			>[3];
+		const kill = rule({ action: 'kill' });
+		for (const caps of [['players.kill'], ['chat.send'], ['players.kick', 'chat.send']])
+			expect(() => requireRuleCaps('kill_distance', kill, server, holding(...caps))).toThrow(
+				caps.includes('players.kill') ? 'whispers players' : 'kills players'
+			);
+		expect(() =>
+			requireRuleCaps('kill_distance', kill, server, holding('players.kill', 'chat.send'))
+		).not.toThrow();
 	});
 	test('raw settings, as a dry run sends them, are read as validation reads them', () => {
 		const raws: unknown[] = [
@@ -31,6 +48,8 @@ describe('ruleNeeds for a Kill distance rule', () => {
 			{ action: 'kick', banScope: 'org' },
 			{ action: 'warn', banScope: 'org' },
 			{ action: 'Warn' },
+			{ action: 'kill', banScope: 'org' },
+			{ action: 'KILL' },
 			{ banScope: 'org' },
 			'ban',
 			null,
@@ -110,6 +129,44 @@ describe('killDistanceAct', () => {
 		});
 		const long = killDistanceAct(
 			rule({ action: 'warn', reason: '{weapon} '.repeat(40) }),
+			caught,
+			2,
+			vars
+		);
+		expect((long.params as { message: string }).message.length).toBe(MAX_CHAT);
+	});
+	test('a kill kills the player and whispers them the text, only while they are on, cut to what chat takes', () => {
+		const roadkill = {
+			...caught,
+			cause: 'Vehicle.Variant.Land.Wheeled.Humvee.Default',
+			distanceM: null
+		};
+		const a = killDistanceAct(
+			rule({
+				action: 'kill',
+				count: 1,
+				minDistanceM: 0,
+				reason: '{name}: the {weapon} is not allowed on {server}'
+			}),
+			roadkill,
+			1,
+			vars
+		);
+		expect(a).toMatchObject({
+			action: RULE_KILL,
+			params: {
+				steamId: A,
+				name: '[ABC] Night Owl',
+				why: 'Humvee kill',
+				message: '[ABC] Night Owl: the Humvee is not allowed on Example #1'
+			},
+			steamId: A,
+			okMessage: 'Killed [ABC] Night Owl: Humvee kill',
+			pending: 'Killing [ABC] Night Owl: Humvee kill',
+			line: 'kill [ABC] Night Owl (76561198000000001): Humvee kill'
+		});
+		const long = killDistanceAct(
+			rule({ action: 'kill', reason: '{weapon} '.repeat(40) }),
 			caught,
 			2,
 			vars

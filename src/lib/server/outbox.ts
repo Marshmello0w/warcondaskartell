@@ -35,6 +35,7 @@ import { KILL_RATE_FLAG } from './kill-rate';
 import { KILL_DISTANCE_FLAG } from './kill-distance';
 import { writeAudit } from './audit';
 import { PANEL_BAN, type PanelBanParams } from './rule-ban';
+import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -300,6 +301,10 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 		return 'Player already left.';
 	if (row.action === 'empty_reset' && (m.players.length > 0 || (m.status?.playerCount ?? 0) > 0))
 		return 'Players arrived before the reset.';
+	// A rule's kill goes soon or not at all (a player off the list at a map change waits for no
+	// longer than this either).
+	if (row.action === RULE_KILL && age > RULE_KILL_MAX_AGE_MS)
+		return `Stale (${Math.round(age / 1000)}s old).`;
 	// An AFK protection round goes only while what the worker last saw still says the server seeds:
 	// a round in a live match kills everyone mid-fight. It goes soon or not at all.
 	if (row.action === AFK_ROUND) {
@@ -513,9 +518,11 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 			env,
 			row,
 			'delivered',
-			(!OWN_WORDS.has(row.action) && messageOf(result)) || row.okMessage
+			((row.action === RULE_KILL || !OWN_WORDS.has(row.action)) && messageOf(result)) ||
+				row.okMessage
 		);
-		// Done, but a later step was refused for sending too fast (changeTeam's kill): hold the rest.
+		// Done, but a later step was refused for sending too fast (changeTeam's kill, a rule kill's
+		// whisper): hold the rest.
 		const wait = retryAfterOf(result);
 		if (wait) {
 			held.set(row.serverId, Math.max(held.get(row.serverId) ?? 0, Date.now() + wait));
@@ -739,11 +746,12 @@ const retryAfterOf = (r: unknown): number =>
 		: 0;
 
 /**
- * A rule's whisper or kick carries what it tells one player, their stats across the organisation
- * among it: what became of it is told in the panel's own words, never the game's, which staff of
- * this server read (Recent actions, the audit trail, Discord) and which might repeat the text.
+ * A rule's whisper, kick or kill carries what it tells one player, their stats across the
+ * organisation among it: what became of it is told in the panel's own words, never the game's,
+ * which staff of this server read (Recent actions, the audit trail, Discord) and which might repeat
+ * the text. A kill says in its own fixed words whether the player was killed and told.
  */
-const OWN_WORDS = new Set(['whisper', 'kick']);
+const OWN_WORDS = new Set(['whisper', 'kick', RULE_KILL]);
 
 /** Why the game refused a whisper or kick, as a fixed phrase: its status and its code. */
 function refusal(err: unknown): string {
@@ -844,6 +852,7 @@ async function afkRound(
 async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> {
 	const params = (row.params as Record<string, unknown>) ?? {};
 	if (row.action === AFK_ROUND) return afkRound(client, params, memoryOf(row.serverId));
+	if (row.action === RULE_KILL) return killAndTell(client, params);
 	if (row.action === 'empty_reset') {
 		let rotationOn = false;
 		try {

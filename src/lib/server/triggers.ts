@@ -13,9 +13,9 @@
 //                or across the org
 //   two_teams    close one faction and move its players to the smaller of the other two
 //                (two-teams.ts)
-//   kill_distance  flag, warn, kick or ban a player who kills with a chosen weapon or vehicle, from
-//                further than it reaches or from any distance (kill-distance.ts, acted on in
-//                feed-events.ts)
+//   kill_distance  flag, warn, kill, kick or ban a player who kills with a chosen weapon or
+//                vehicle, from further than it reaches or from any distance (kill-distance.ts,
+//                acted on in feed-events.ts)
 //   afk_protection  kill everyone every few minutes while the server seeds, so the game's idle kick
 //                spares the seeders (afk-protection.ts)
 // The worker evaluates them on every observation and writes the actions they want to the outbox
@@ -108,6 +108,7 @@ import {
 	type KillDistanceConfig
 } from './kill-distance';
 import { banNeeds, PANEL_BAN, type PanelBanParams } from './rule-ban';
+import { RULE_KILL, RULE_KILL_NEEDS, type RuleKillParams } from './rule-kill';
 import { causeLabel } from '$lib/causes';
 import {
 	emptyTwoTeamsState,
@@ -223,8 +224,8 @@ const RULE_NEEDS: Record<
 
 /**
  * What one rule needs of whoever saves it. The Seeding reward reserves slots: here, or on the
- * organisation's list. A Kill distance rule flags, warns, kicks, or bans: here, or on the
- * organisation's ban list.
+ * organisation's list. A Kill distance rule flags, warns, kills (and whispers), kicks, or bans:
+ * here, or on the organisation's ban list.
  */
 export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, string] {
 	if (kind === 'seed_reward')
@@ -235,6 +236,7 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
 		const action = killDistanceAction(config);
 		if (action === 'ban') return banNeeds(killDistanceBanScope(config));
 		if (action === 'warn') return ['chat.send', 'whispers players'];
+		if (action === 'kill') return RULE_KILL_NEEDS[0];
 		return ['players.kick', action === 'kick' ? 'kicks players' : 'flags players'];
 	}
 	return RULE_NEEDS[kind];
@@ -242,9 +244,10 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
 
 /**
  * What else a rule needs when it also messages players: a Team balance rule with a whisper, an AFK
- * protection rule with a broadcast.
+ * protection rule with a broadcast, a Kill distance rule's kill with its whisper.
  */
 function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
+	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
 	if (kind === 'two_teams' && str((config as Partial<TwoTeamsConfig> | null)?.message))
 		return ['chat.send', 'whispers players'];
 	const afk = config as Partial<AfkProtectionConfig> | null;
@@ -1656,9 +1659,9 @@ export interface CaughtKill {
  * the line its dry run shows. The live rule (feed-events.ts) and the dry run both build it here,
  * the text the player is told from the placeholders the caller has for the killer (`vars`) and the
  * kill's own; a ban's reason is kept on the ban list where staff read it, so the player's org-wide
- * stats are no placeholders in it, warning, kick or ban alike (keptVars).
- * A ban stands whether or not the player is still on by the time it is delivered; a warning or a
- * kick does not.
+ * stats are no placeholders in it, warning, kill, kick or ban alike (keptVars).
+ * A ban stands whether or not the player is still on by the time it is delivered; a warning, a kill
+ * or a kick does not.
  */
 export function killDistanceAct(
 	cfg: KillDistanceConfig,
@@ -1675,7 +1678,7 @@ export function killDistanceAct(
 			distance: k.distanceM === null ? UNKNOWN : Math.round(k.distanceM),
 			count
 		},
-		cfg.action === 'warn' ? MAX_CHAT : MAX_REASON
+		cfg.action === 'warn' || cfg.action === 'kill' ? MAX_CHAT : MAX_REASON
 	);
 	const detail = { name: k.name, verdict, cause: k.cause, distanceM: k.distanceM, count };
 	const who = `${k.name} (${k.steamId})`;
@@ -1689,6 +1692,23 @@ export function killDistanceAct(
 			pending: `Warning ${k.name}: ${verdict}`,
 			line: `warn ${who}: ${verdict}`
 		};
+	if (cfg.action === 'kill') {
+		const params: RuleKillParams = {
+			steamId: k.steamId,
+			name: k.name,
+			why: verdict,
+			message: reason
+		};
+		return {
+			action: RULE_KILL,
+			params: { ...params },
+			okMessage: `Killed ${k.name}: ${verdict}`,
+			detail,
+			steamId: k.steamId,
+			pending: `Killing ${k.name}: ${verdict}`,
+			line: `kill ${who}: ${verdict}`
+		};
+	}
 	if (cfg.action === 'kick')
 		return {
 			action: 'kick',
