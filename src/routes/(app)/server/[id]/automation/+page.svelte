@@ -182,7 +182,7 @@
 			group: 'Players',
 			label: 'Kill distance watch',
 			blurb:
-				'Flag, warn, kick or ban players for kills with chosen weapons or vehicles, at any distance or from too far.'
+				'Flag, warn, kill, kick or ban players for kills with chosen weapons or vehicles, at any distance or from too far.'
 		},
 		{
 			kind: 'two_teams',
@@ -218,7 +218,9 @@
 				? 'ban'
 				: action === 'afk_round'
 					? 'kill everyone'
-					: action;
+					: action === 'rule_kill'
+						? 'kill'
+						: action;
 	const label = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.label ?? kind;
 	const blurb = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.blurb ?? '';
 	/** Why a kind cannot run on this server yet, or '' when it can. */
@@ -249,11 +251,12 @@
 	let canSlotHere = $derived(can(data.server.caps, 'slots.manage'));
 	let canSlotOrg = $derived(can(data.server.caps, 'lists.reserve'));
 	/**
-	 * what a Kill distance rule may do: flag or kick (Kick), warn (Chat), ban on this server's list
-	 * (Bans) or the org's (Org ban list)
+	 * what a Kill distance rule may do: flag or kick (Kick), warn (Chat), kill and whisper (Kill and
+	 * Chat), ban on this server's list (Bans) or the org's (Org ban list)
 	 */
 	let canKick = $derived(can(data.server.caps, 'players.kick'));
 	let canChat = $derived(can(data.server.caps, 'chat.send'));
+	let canKill = $derived(can(data.server.caps, 'players.kill'));
 	let canBanHere = $derived(can(data.server.caps, 'bans.manage'));
 	let canBanOrg = $derived(can(data.server.caps, 'lists.ban'));
 	/** Charges that are placed and set off from anywhere: how far away the killer was says nothing. */
@@ -294,9 +297,12 @@
 				chosen.filter((c) => listOf(c) === kind)
 			)
 		}));
-	/** A Kill distance rule's text until one is written: a warning, or the reason for a kick or ban. */
+	/**
+	 * A Kill distance rule's text until one is written: a warning (with a kill or not), or the reason
+	 * for a kick or ban.
+	 */
 	const distanceText = (action: string) =>
-		action === 'warn'
+		action === 'warn' || action === 'kill'
 			? '{weapon} is not allowed on this server.'
 			: 'Impossible kill: {weapon} from {distance} m.';
 	/** Switching between warning and kicking or banning swaps a text still as the rule began it. */
@@ -450,7 +456,7 @@
 		causes: string[];
 		minDistanceM: number;
 		count: number;
-		distanceAction: 'flag' | 'warn' | 'kick' | 'ban';
+		distanceAction: 'flag' | 'warn' | 'kill' | 'kick' | 'ban';
 		banDays: number;
 		banScope: 'server' | 'org';
 		stopAt: number;
@@ -524,7 +530,11 @@
 		// a new Kill distance rule kicks, or bans for an author who may ban but not kick, or warns for
 		// one who may only whisper
 		const distanceAction: Form['distanceAction'] =
-			c.action === 'flag' || c.action === 'warn' || c.action === 'kick' || c.action === 'ban'
+			c.action === 'flag' ||
+			c.action === 'warn' ||
+			c.action === 'kill' ||
+			c.action === 'kick' ||
+			c.action === 'ban'
 				? c.action
 				: canKick
 					? 'kick'
@@ -966,8 +976,8 @@
 				const act =
 					c.action === 'ban'
 						? `ban ${c.banScope === 'org' ? 'on every server' : 'here'} ${days ? `for ${days} day${days === 1 ? '' : 's'}` : 'for good'}`
-						: c.action === 'kick'
-							? 'kick'
+						: c.action === 'kick' || c.action === 'kill'
+							? c.action
 							: `${c.action === 'warn' ? 'warn' : 'flag'} · again after ${c.cooldownMinutes} min`;
 				const far = Number(c.minDistanceM) > 0 ? `from ${c.minDistanceM} m` : 'at any distance';
 				return `${weapons} ${far} · ${c.count === 1 ? '1 kill' : `${c.count} kills in a match`} · ${act}`;
@@ -2116,6 +2126,18 @@
 							Warn
 							<span class="text-mist-600">(whisper the player)</span></label
 						>
+						<label
+							class="flex flex-wrap items-center gap-2 {canKill && canChat ? '' : 'text-mist-600'}"
+							><input
+								type="radio"
+								value="kill"
+								bind:group={f.distanceAction}
+								disabled={!canKill || !canChat}
+								onchange={(e) => swapText(f, e.currentTarget.value)}
+							/>
+							Kill
+							<span class="text-mist-600">(and whisper the player)</span></label
+						>
 						<label class="flex items-center gap-2 {canKick ? '' : 'text-mist-600'}"
 							><input
 								type="radio"
@@ -2189,7 +2211,9 @@
 							<legend class="field-label"
 								>{f.distanceAction === 'warn'
 									? 'Warning, whispered to the player'
-									: `${f.distanceAction === 'ban' ? 'Ban reason' : 'Kick reason'}, shown to the player`}</legend
+									: f.distanceAction === 'kill'
+										? 'Whispered to the player as they are killed'
+										: `${f.distanceAction === 'ban' ? 'Ban reason' : 'Kick reason'}, shown to the player`}</legend
 							>
 							<input class="input" type="text" bind:value={f.reason} maxlength="200" />
 							{@render placeholders('kill_distance', [f.reason])}
