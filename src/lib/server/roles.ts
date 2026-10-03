@@ -74,7 +74,10 @@ const shape = (r: OrgRoleRow, inUse: { grants: number; invites: number }): RoleV
 	updatedAt: iso(r.updatedAt)
 });
 
-/** Rows in display order: built-ins first (viewer, operator, admin), then custom roles by name. */
+/**
+ * Rows in display order: the order the org's owners set (reorderRoles), name for ties. Built-ins
+ * start first (viewer, operator, admin) and a new role goes in last.
+ */
 export async function orgRoleRows(env: Env, orgId: string): Promise<OrgRoleRow[]> {
 	return env.db
 		.select()
@@ -131,8 +134,16 @@ export async function roleInOrg(env: Env, orgId: string, roleId: string): Promis
 	return row;
 }
 
-async function assertNameFree(env: Env, orgId: string, name: string, exceptId?: string) {
-	const rows = await env.db
+/**
+ * One request at a time writes an org's role order: a reorder, or a new role taking the place
+ * after the last. Taken first in the transaction, so the reads after it see what the request
+ * before committed (a row lock with ORDER BY can hand rows back in their old order).
+ */
+export const lockRoleOrder = (tx: DbLike, orgId: string) =>
+	tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`roles:${orgId}`}))`);
+
+async function assertNameFree(db: DbLike, orgId: string, name: string, exceptId?: string) {
+	const rows = await db
 		.select({ id: orgRoles.id })
 		.from(orgRoles)
 		.where(and(eq(orgRoles.orgId, orgId), sql`lower(${orgRoles.name}) = lower(${name})`));
@@ -149,11 +160,28 @@ export async function createRole(
 ): Promise<RoleView> {
 	const name = validateRoleName(body.name);
 	const capabilities = validateRoleCapabilities(body.capabilities ?? [VIEW]);
-	await assertNameFree(env, org.id, name);
-	const [row] = await env.db
-		.insert(orgRoles)
-		.values({ id: newId(), orgId: org.id, name, capabilities, builtin: null, sortOrder: 100 })
-		.returning();
+	const row = await env.db.transaction(async (tx) => {
+		await lockRoleOrder(tx, org.id);
+		// under the lock, so of two new roles with one name the second is told so (409), rather
+		// than running into the unique index
+		await assertNameFree(tx, org.id, name);
+		const [last] = await tx
+			.select({ n: sql<number>`coalesce(max(${orgRoles.sortOrder}), -1)` })
+			.from(orgRoles)
+			.where(eq(orgRoles.orgId, org.id));
+		const [made] = await tx
+			.insert(orgRoles)
+			.values({
+				id: newId(),
+				orgId: org.id,
+				name,
+				capabilities,
+				builtin: null,
+				sortOrder: Number(last?.n ?? -1) + 1
+			})
+			.returning();
+		return made;
+	});
 	await writeAudit(env, req, {
 		actor,
 		orgId: org.id,
@@ -179,7 +207,7 @@ export async function updateRole(
 	const patch: Partial<typeof orgRoles.$inferInsert> = { updatedAt: new Date() };
 	if (body.name !== undefined) {
 		patch.name = validateRoleName(body.name);
-		await assertNameFree(env, org.id, patch.name, role.id);
+		await assertNameFree(env.db, org.id, patch.name, role.id);
 	}
 	if (body.capabilities !== undefined)
 		patch.capabilities = validateRoleCapabilities(body.capabilities);
@@ -250,7 +278,7 @@ export async function resetRole(
 ): Promise<RoleView> {
 	const role = await roleInOrg(env, org.id, roleId);
 	if (!role.builtin) throw new ApiError(409, 'Only built-in roles can be reset.', 'not_builtin');
-	await assertNameFree(env, org.id, role.builtin, role.id);
+	await assertNameFree(env.db, org.id, role.builtin, role.id);
 	const [row] = await env.db
 		.update(orgRoles)
 		.set({
@@ -271,6 +299,62 @@ export async function resetRole(
 	});
 	const used = await usage(env, org.id);
 	return shape(row, used.get(row.id) ?? { grants: 0, invites: 0 });
+}
+
+/**
+ * Puts the org's roles in the order given, first to last: the columns of the roles page and every
+ * role picker. Display only; nothing that decides access reads it. The list must name each of
+ * the org's roles once, so a list read before a role was added or deleted is refused (409
+ * `stale`) rather than saved half right.
+ */
+export async function reorderRoles(
+	env: Env,
+	req: Request,
+	actor: SessionUser,
+	org: OrgRow,
+	body: Record<string, unknown>
+): Promise<RoleView[]> {
+	const ids = body.ids;
+	if (!Array.isArray(ids) || !ids.every((v): v is string => typeof v === 'string'))
+		throw new ApiError(400, 'ids must be a list of role ids.');
+	const moved = await env.db.transaction(async (tx) => {
+		await lockRoleOrder(tx, org.id);
+		const rows = await tx
+			.select()
+			.from(orgRoles)
+			.where(eq(orgRoles.orgId, org.id))
+			.orderBy(asc(orgRoles.sortOrder), asc(orgRoles.name));
+		const byId = new Map(rows.map((r) => [r.id, r]));
+		if (
+			ids.length !== rows.length ||
+			new Set(ids).size !== ids.length ||
+			!ids.every((id) => byId.has(id))
+		)
+			throw new ApiError(
+				409,
+				'The roles changed since this list was read. Read them again and resend the order.',
+				'stale'
+			);
+		// positions are rewritten 0..n even when the order stays (custom roles made before this
+		// all sat at 100); only a change a person can see is audited
+		for (const [i, id] of ids.entries())
+			if (byId.get(id)!.sortOrder !== i)
+				await tx.update(orgRoles).set({ sortOrder: i }).where(eq(orgRoles.id, id));
+		return ids.some((id, i) => rows[i].id !== id)
+			? { from: rows.map((r) => r.name), to: ids.map((id) => byId.get(id)!.name) }
+			: null;
+	});
+	if (moved)
+		await writeAudit(env, req, {
+			actor,
+			orgId: org.id,
+			category: 'org',
+			action: 'org.role.reorder',
+			outcome: 'ok',
+			target: org.name,
+			detail: { orgId: org.id, ...moved }
+		});
+	return listRoles(env, org.id);
 }
 
 /** Roles of several orgs at once (the site owner's user dialog spans every organisation). */

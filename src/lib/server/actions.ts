@@ -644,7 +644,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		run: (c, p) => whisperMany(c, p)
 	},
 	kick: {
-		cap: 'players.moderate',
+		cap: 'players.kick',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) =>
@@ -653,7 +653,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 			})
 	},
 	kill: {
-		cap: 'players.moderate',
+		cap: 'players.kill',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: (c, p) => c.json('POST', `/v1/players/${steamId(p.steamId)}/kill`)
@@ -663,7 +663,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 	// too fast says so, and carries the wait the game asked for (`retryAfterMs`) so a caller can
 	// hold off the server; it is not sent again, since the move is done.
 	changeTeam: {
-		cap: 'players.moderate',
+		cap: 'players.move',
 		mutating: true,
 		target: (p) => str(p.steamId, 32),
 		run: async (c, p) => {

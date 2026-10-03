@@ -253,6 +253,13 @@
       "when": 1790637099022,
       "tag": "0035_team_kill_match_texts",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1790877877865,
+      "tag": "0036_player_action_capabilities",
+      "breakpoints": true
     }
   ]
 }

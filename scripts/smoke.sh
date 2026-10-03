@@ -74,7 +74,7 @@ check config-read 'ServerName=' "$(req $J1 GET /api/servers/$SID/rcon/config)"
 check serverlog '"entries"' "$(req $J1 GET "/api/servers/$SID/rcon/serverLog?limit=5")"
 check unknown-action 'Unknown action' "$(req $J1 GET /api/servers/$SID/rcon/nope)"
 check get-mutating-405 'must be POSTed' "$(req $J1 GET /api/servers/$SID/rcon/kick)"
-check actions-list '"kick":{"cap":"players.moderate"' "$(req $J1 GET /api/actions)"
+check actions-list '"kick":{"cap":"players.kick"' "$(req $J1 GET /api/actions)"
 
 echo "== rcon mutations"
 check broadcast 'Announcement sent' "$(req $J1 POST /api/servers/$SID/rcon/broadcast '{"message":"hello"}')"
@@ -135,6 +135,15 @@ check bob-org-member '"username":"bob"' "$(req $J1 GET /api/orgs/$ORG/members)"
 check bob-status-ok '"scores"' "$(req $J3 GET /api/servers/$SID/rcon/status)"
 check bob-kick-denied "your role 'viewer' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/kick '{"steamId":"76561198100000103"}')"
 check bob-group-whisper-denied "your role 'viewer' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/whisperMany '{"faction":"Valkyra","message":"hi"}')"
+# Move alone: no kick, no kill, and no move to the side a player is on, which would only kill them
+check role-mover '"name":"Mover"' "$(req $J1 POST /api/orgs/$ORG/roles '{"name":"Mover","capabilities":["server.view","players.move"]}')"
+ROLES=$(req $J1 GET /api/orgs/$ORG/roles); RID_MOVER=$(roleid Mover)
+GB="{\"grants\":[{\"userId\":\"$UID_BOB\",\"roleId\":\"$RID_MOVER\"}]}"
+check grant-mover '"roleName":"Mover"' "$(req $J1 PUT /api/servers/$SID/grants "$GB")"
+check mover-kick-denied "your role 'Mover' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/kick '{"steamId":"76561198100000106"}')"
+check mover-kill-denied "your role 'Mover' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/kill '{"steamId":"76561198100000106"}')"
+check mover-same-side 'already on Lonestar' "$(req $J3 POST /api/servers/$SID/rcon/changeTeam '{"steamId":"76561198100000106","faction":"Lonestar"}')"
+check mover-move 'Moved' "$(req $J3 POST /api/servers/$SID/rcon/changeTeam '{"steamId":"76561198100000106","faction":"Manticore"}')"
 GB="{\"grants\":[{\"userId\":\"$UID_BOB\",\"roleId\":\"$RID_OPERATOR\"}]}"
 check server-grants-put '"roleName":"operator"' "$(req $J1 PUT /api/servers/$SID/grants "$GB")"
 check server-grants-get '"username":"bob"' "$(req $J1 GET /api/servers/$SID/grants)"
@@ -206,6 +215,9 @@ check trigger-update '"enabled":false' "$(req $J1 PATCH /api/servers/$SID/trigge
 check trigger-dryrun '"fires"' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"welcome","config":{"message":"hi {name}"}}')"
 check trigger-dryrun-risk 'Steam lookup is off' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"risk_kick","config":{"watchlist":true}}')"
 check trigger-dryrun-broadcast '"kind":"broadcast"' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"broadcast","config":{"messages":["a"],"everyMinutes":1}}')"
+# a dry run fills the player's name ({player} is {name}) and shows … for what it does not replay
+for i in $(seq 1 10); do R=$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"welcome","config":{"message":"hi {player}: {kills} kills, {org_kills} in all, on {map}"}}'); [[ "$R" == *': … kills, … in all, on …'* ]] && break; sleep 2; done
+check trigger-dryrun-placeholders ': … kills, … in all, on …' "$R"
 R=$(req $J1 POST /api/servers/$SID/triggers '{"kind":"risk_kick","name":"Watch kick","enabled":true,"config":{"watchlist":true,"reason":"watched"}}'); TID2=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 R=$(req $J1 POST /api/servers/$SID/triggers '{"kind":"welcome","name":"Hello 2","enabled":true,"config":{"message":"Welcome {name}"}}'); TID3=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 check trigger-delete '"ok":true' "$(req $J1 DELETE /api/servers/$SID/triggers/$TID)"

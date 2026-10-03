@@ -1,9 +1,10 @@
 // A Kill distance rule as the worker runs it, against the database and a stand-in game: kills
 // come in through the real ingest, reach the rule on their own server only, and count per match;
 // only the chosen weapons from the distance on count; a flag sends nothing to the game and is
-// audited, a kick is a kick row, and a ban is an entry on the panel's ban list that the panel's own
-// enforcement removes the player with at the next look, written only while the worker is owned.
-// Nothing a person or a key can call runs the rule's ban or flag.
+// audited, a warning is a whisper row, a kick is a kick row, and a ban is an entry on the panel's
+// ban list that the panel's own enforcement removes the player with at the next look, written only
+// while the worker is owned. From 0 m every kill with the chosen weapons counts, one without a
+// distance too. Nothing a person or a key can call runs the rule's ban or flag.
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { and, eq, isNull } from 'drizzle-orm';
 import { join } from 'node:path';
@@ -35,10 +36,14 @@ import { hasTestDb, testEnv } from './db';
 import { seedWorld, type World } from './world';
 
 const DEFIB = 'Id.Item.Defibrillator.Standard';
+const HUMVEE_M249 = 'Id.Vehicle.WeaponExtension.WHL_05.RingTurret';
+const HUMVEE_MINIGUN = 'Id.Vehicle.WeaponExtension.WHL_05.RingMinigun';
 const CHEAT = '76561198000000801';
 const MEDIC = '76561198000000802';
 const SNIPER = '76561198000000803';
 const VICTIM = '76561198000000804';
+/** a player the server does not list */
+const GONE = '76561198000000805';
 const REASON = 'Impossible kill: Defibrillator from 4057 m.';
 
 /** One `killed` event as the game posts it; distance in metres here, centimetres on the wire. */
@@ -66,6 +71,8 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 	const onServer = new Map<string, string[]>();
 	/** the kicks it was asked for: server, player, reason */
 	const kicked: [string, string, string][] = [];
+	/** the whispers it was asked for: server, player, message */
+	const whispered: [string, string, string][] = [];
 
 	beforeAll(async () => {
 		env = { ...(await testEnv()), STEAM_API_KEY: '' };
@@ -102,6 +109,11 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 				if (method === 'POST' && kick) {
 					kicked.push([server.id, kick[1], JSON.parse(body ?? '{}').reason]);
 					return ok('{}');
+				}
+				const whisper = /^\/v1\/players\/(\d{17})\/message$/.exec(path);
+				if (method === 'POST' && whisper) {
+					whispered.push([server.id, whisper[1], JSON.parse(body ?? '{}').message]);
+					return ok('{"message":"Message sent."}');
 				}
 				return raw(method, path, body, headers);
 			};
@@ -239,6 +251,85 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 			ev(null)
 		]);
 		expect(await rowsOf(id)).toHaveLength(0);
+	});
+
+	test('a warning on a Humvee’s guns from 0 m: whispered once in the cooldown, a kill without a distance too, in the panel’s words', async () => {
+		const w = await seedWorld(env);
+		const [server] = await env.db.select().from(servers).where(eq(servers.id, w.server.id));
+		const [org] = await env.db.select().from(organizations).where(eq(organizations.id, w.org.id));
+		const m = memoryFor(server, org);
+		onServer.set(server.id, [CHEAT, MEDIC, SNIPER]);
+		try {
+			await observeServer(env, m, { status: true, players: true });
+			const id = await rule(w, w.server.id, {
+				causes: [HUMVEE_M249, HUMVEE_MINIGUN],
+				minDistanceM: 0,
+				count: 1,
+				action: 'warn',
+				cooldownMinutes: 10,
+				reason: '{name}: the {weapon} is not allowed here ({distance} m).'
+			});
+			await post(w.server.id, [ev(CHEAT, { cause: HUMVEE_M249, distanceM: 35, eventTime: 100 })]);
+			// the same player again inside the cooldown, a kill the feed sent without a distance
+			await post(w.server.id, [
+				ev(CHEAT, { cause: HUMVEE_MINIGUN, distanceM: null, eventTime: 120 })
+			]);
+			// another player's minigun kill without a distance, and an M249 carried by hand
+			await post(w.server.id, [
+				ev(MEDIC, { cause: HUMVEE_MINIGUN, distanceM: null, eventTime: 130 }),
+				ev(SNIPER, { cause: 'Id.Item.M249', distanceM: 35, eventTime: 131 })
+			]);
+			const rows = await rowsOf(id);
+			expect(
+				rows.map((r) => [
+					r.action,
+					r.steamId,
+					(r.params as { message: string }).message,
+					r.okMessage
+				])
+			).toEqual([
+				[
+					'whisper',
+					CHEAT,
+					'p801: the Humvee M249 is not allowed here (35 m).',
+					'Warned p801: Humvee M249 kill from 35 m'
+				],
+				[
+					'whisper',
+					MEDIC,
+					'p802: the Humvee minigun is not allowed here (… m).',
+					'Warned p802: Humvee minigun kill'
+				]
+			]);
+			// sent only while the rule holds the settings it was decided under
+			expect((rows[0].params as { rule?: string }).rule).toMatch(/^[A-Za-z0-9_-]{16}$/);
+			const done = await deliver(...rows.map((r) => r.id));
+			// what became of it is told in the panel's words, never the game's
+			expect(done.map((d) => [d.state, d.outcome])).toEqual([
+				['delivered', 'Warned p801: Humvee M249 kill from 35 m'],
+				['delivered', 'Warned p802: Humvee minigun kill']
+			]);
+			expect(whispered.filter(([s]) => s === w.server.id)).toEqual([
+				[w.server.id, CHEAT, 'p801: the Humvee M249 is not allowed here (35 m).'],
+				[w.server.id, MEDIC, 'p802: the Humvee minigun is not allowed here (… m).']
+			]);
+			const [audit] = await auditSoon(w.server.id, 'trigger.kill_distance', CHEAT);
+			expect([audit.outcome, audit.category, audit.message]).toEqual([
+				'ok',
+				'trigger',
+				'Warned p801: Humvee M249 kill from 35 m'
+			]);
+			expect(kicked.filter(([s]) => s === w.server.id)).toEqual([]);
+			// a killer the server does not list: queued, but a warning needs them on
+			await post(w.server.id, [ev(GONE, { cause: HUMVEE_M249, distanceM: 40, eventTime: 140 })]);
+			const [left] = (await rowsOf(id)).filter((r) => r.steamId === GONE);
+			expect((await deliver(left.id)).map((d) => [d.state, d.outcome])).toEqual([
+				['skipped', 'Player already left.']
+			]);
+			expect(whispered.filter(([, p]) => p === GONE)).toEqual([]);
+		} finally {
+			forgetMemory(server.id);
+		}
 	});
 
 	test('a kick rule kicks once for a burst, with its reason, while the kick lands', async () => {
@@ -608,6 +699,58 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 		]);
 		expect(r.notes).toContain(
 			'4 kills with Defibrillator from 100 m or more in the window, counted per match.'
+		);
+	});
+
+	test('the dry run from 0 m counts kills without a distance; from 1 m it does not', async () => {
+		const w = await seedWorld(env);
+		const at = new Date();
+		const row = (killer: string, cause: string, distanceM: number | null, eventTime: number) => ({
+			ts: at,
+			serverId: w.server.id,
+			eventId: newId(),
+			instanceId: 'i',
+			matchId: 'm',
+			matchRow: 9101,
+			eventTime,
+			map: 'Kavkazi',
+			killerSteamId: killer,
+			killerName: `p${killer.slice(-3)}`,
+			victimSteamId: VICTIM,
+			victimName: 'victim',
+			cause,
+			distanceM,
+			tags: []
+		});
+		await env.db
+			.insert(kills)
+			.values([
+				row(CHEAT, HUMVEE_M249, null, 10),
+				row(MEDIC, HUMVEE_M249, 35, 20),
+				row(SNIPER, 'Id.Item.M249', 35, 30)
+			]);
+		const server = { ...w.server, name: 'one' } as Parameters<typeof dryRun>[1];
+		const run = (minDistanceM: number) =>
+			dryRun(env, server, 'kill_distance', {
+				causes: [HUMVEE_M249],
+				minDistanceM,
+				count: 1,
+				action: 'warn'
+			});
+		const any = await run(0);
+		expect(any.items.map((i) => i.text)).toEqual([
+			`warn p801 (${CHEAT}): Humvee M249 kill`,
+			`warn p802 (${MEDIC}): Humvee M249 kill from 35 m`
+		]);
+		expect(any.notes).toContain(
+			'2 kills with Humvee M249 at any distance in the window, counted per match.'
+		);
+		const far = await run(1);
+		expect(far.items.map((i) => i.text)).toEqual([
+			`warn p802 (${MEDIC}): Humvee M249 kill from 35 m`
+		]);
+		expect(far.notes).toContain(
+			'1 kill with Humvee M249 from 1 m or more in the window, counted per match.'
 		);
 	});
 

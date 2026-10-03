@@ -26,6 +26,14 @@ const ROLLED_BEYOND_MS = 14 * 86400_000;
 
 export const parseRange = (v: string | null): Range => (v === '7d' || v === '30d' ? v : '24h');
 
+export type PeriodUnit = 'hour' | 'day';
+/** The periods a range is cut into for the per-period charts: hours over a day, days beyond. */
+const PERIODS: Record<Range, { unit: PeriodUnit; n: number }> = {
+	'24h': { unit: 'hour', n: 24 },
+	'7d': { unit: 'day', n: 7 },
+	'30d': { unit: 'day', n: 30 }
+};
+
 export interface PopulationPoint {
 	ts: string;
 	avg: number | null;
@@ -36,6 +44,27 @@ export interface PopulationPoint {
 	/** seconds this bucket's samples covered while up / while unreachable */
 	up: number;
 	down: number;
+}
+/** One hour or one day, from the player sessions. */
+export interface PeriodPoint {
+	/** when it starts */
+	ts: string;
+	/** the players who were on during it */
+	players: number;
+	/** of them, those whose first session on this server began in it */
+	newPlayers: number;
+	/** the sessions that ended in it, and how long they lasted */
+	sessions: number;
+	avgSessionS: number | null;
+	medianSessionS: number | null;
+}
+export interface Periods {
+	range: Range;
+	/** the time zone the days are cut in */
+	tz: string;
+	unit: PeriodUnit;
+	/** oldest first; the last one is running now */
+	periods: PeriodPoint[];
 }
 /** Cash in play at one moment or bucket: the total and each faction's share ('' = unassigned). */
 export interface CashPoint {
@@ -429,6 +458,112 @@ async function teamWins(env: Env, serverId: string, from: Date): Promise<TeamWin
 		decided: num(totals?.decided),
 		draws: num(totals?.draws),
 		noResult: num(totals?.none)
+	};
+}
+
+let zones: Promise<Set<string>> | null = null;
+
+/**
+ * The time zone to cut days in: the name the browser reports when Postgres knows it (its list
+ * holds the old names browsers still send, such as Asia/Calcutta, and the new ones), else UTC.
+ * The list is read once per process.
+ */
+export async function timeZone(env: Env, name: string | null | undefined): Promise<string> {
+	if (!name || name.length > 64) return 'UTC';
+	zones ??= env.db
+		.execute<{ name: string }>(sql`SELECT name FROM pg_timezone_names`)
+		.then((rows) => new Set(rows.map((r) => r.name)));
+	try {
+		return (await zones).has(name) ? name : 'UTC';
+	} catch {
+		zones = null;
+		return 'UTC';
+	}
+}
+
+/**
+ * Players, new players and session lengths per hour (24h) or per day (7d, 30d), the last period
+ * the one running now: days in the viewer's time zone (`tz`, an IANA name the browser reports;
+ * UTC when it is missing or unknown), hours counted back from the start of the current one. A
+ * player counts in every period one of their sessions touches, and is new in the period their
+ * first session on this server began; a session counts, with its whole length, in the period it
+ * ended, so one still running counts in none.
+ *
+ * One read of the sessions seen since the first period started (the (server, last_seen) index),
+ * each placed by width_bucket over the period starts, which Postgres works out once in the zone.
+ * A player whose sessions there all began inside the periods is then looked up on the
+ * (steam_id, joined_at) index, back from the first start, for a session here before it: the read
+ * grows with the players in the range and their own history, not with the server's.
+ */
+export async function loadPeriods(
+	env: Env,
+	serverId: string,
+	range: Range,
+	tz: string | null | undefined,
+	/** the moment the last period runs at (tests pass one) */
+	at: Date = new Date()
+): Promise<Periods> {
+	const { unit, n } = PERIODS[range];
+	const zone = await timeZone(env, tz);
+	const last = n - 1;
+	const now = sql`${at}::timestamptz`;
+	// Local midnights for days, so a day is 23 or 25 hours where the clocks change.
+	const starts =
+		unit === 'day'
+			? sql`ARRAY(SELECT ((${now} AT TIME ZONE ${zone})::date - ${last}::int + k)::timestamp AT TIME ZONE ${zone}
+			              FROM generate_series(0, ${last}::int) k ORDER BY k)`
+			: sql`ARRAY(SELECT date_trunc('hour', ${now}, ${zone}) - (${last}::int - k) * interval '1 hour'
+			              FROM generate_series(0, ${last}::int) k ORDER BY k)`;
+	const rows = await env.db.execute<{
+		start: Date;
+		players: string;
+		fresh: string;
+		sessions: string;
+		avg: number | null;
+		median: number | null;
+	}>(sql`
+		WITH w AS (SELECT ${starts} AS starts),
+		s AS (
+			-- a, b, e: the periods it began, was last seen and ended in; -1 before the first
+			SELECT p.steam_id, width_bucket(p.joined_at, w.starts) - 1 AS a,
+			       width_bucket(p.last_seen, w.starts) - 1 AS b, width_bucket(p.left_at, w.starts) - 1 AS e,
+			       date_part('epoch', p.left_at - p.joined_at) AS secs
+			  FROM player_sessions p, w
+			 WHERE p.server_id = ${serverId} AND p.last_seen >= w.starts[1]),
+		present AS (
+			SELECT k, COUNT(*) AS players
+			  FROM (SELECT DISTINCT k, s.steam_id FROM s, generate_series(GREATEST(s.a, 0), s.b) k) x
+			 GROUP BY k),
+		fresh AS (
+			SELECT c.k, COUNT(*) AS n
+			  FROM (SELECT s.steam_id, MIN(s.a) AS k FROM s GROUP BY s.steam_id HAVING MIN(s.a) >= 0) c
+			 CROSS JOIN w
+			  LEFT JOIN LATERAL (SELECT 1 AS seen FROM player_sessions o
+			                      WHERE o.steam_id = c.steam_id AND o.server_id = ${serverId}
+			                        AND o.joined_at < w.starts[1]
+			                      ORDER BY o.joined_at DESC LIMIT 1) o ON true
+			 WHERE o.seen IS NULL GROUP BY c.k),
+		ended AS (
+			SELECT s.e AS k, COUNT(*) AS n, AVG(s.secs) AS avg,
+			       percentile_cont(0.5) WITHIN GROUP (ORDER BY s.secs) AS median
+			  FROM s WHERE s.e >= 0 GROUP BY s.e)
+		SELECT w.starts[k + 1] AS start, COALESCE(p.players, 0) AS players, COALESCE(f.n, 0) AS fresh,
+		       COALESCE(e.n, 0) AS sessions, e.avg, e.median
+		  FROM w, generate_series(0, ${last}::int) k
+		  LEFT JOIN present p USING (k) LEFT JOIN fresh f USING (k) LEFT JOIN ended e USING (k)
+		 ORDER BY k`);
+	return {
+		range,
+		tz: zone,
+		unit,
+		periods: rows.map((r) => ({
+			ts: isoOf(r.start),
+			players: num(r.players),
+			newPlayers: num(r.fresh),
+			sessions: num(r.sessions),
+			avgSessionS: r.avg === null ? null : Math.round(num(r.avg)),
+			medianSessionS: r.median === null ? null : Math.round(num(r.median))
+		}))
 	};
 }
 

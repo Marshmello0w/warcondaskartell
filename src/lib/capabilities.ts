@@ -7,7 +7,9 @@ import type { ListKind } from './types';
 export const CAPABILITIES = [
 	'server.view',
 	'chat.send',
-	'players.moderate',
+	'players.kick',
+	'players.kill',
+	'players.move',
 	'match.control',
 	'rotation.edit',
 	'players.notes',
@@ -55,9 +57,11 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
 		hint: 'Broadcast to everyone; whisper a player, several, or a faction.',
 		group: 'play'
 	},
-	'players.moderate': {
-		label: 'Kick, kill, move',
-		hint: 'Kick or kill a player; move them to another team.',
+	'players.kick': { label: 'Kick', hint: 'Kick a player off the server.', group: 'play' },
+	'players.kill': { label: 'Kill', hint: "Kill a player's character.", group: 'play' },
+	'players.move': {
+		label: 'Move',
+		hint: 'Move a player to another team; they are killed so they respawn on it.',
 		group: 'play'
 	},
 	'match.control': {
@@ -156,7 +160,9 @@ export type BuiltinRole = (typeof BUILTIN_ROLES)[number];
 const OPERATOR: Capability[] = [
 	'server.view',
 	'chat.send',
-	'players.moderate',
+	'players.kick',
+	'players.kill',
+	'players.move',
 	'match.control',
 	'rotation.edit',
 	'players.notes'

@@ -1,14 +1,17 @@
 <script lang="ts">
 	// Roles × capabilities. Each column is one of the org's server roles; each row is one thing a
 	// role may do. Built-ins can be edited and reset but not deleted; custom roles can be deleted
-	// once nothing points at them. Edits are held locally until Save, like the access matrix.
+	// once nothing points at them. Edits are held locally until Save, like the access matrix. The
+	// columns follow the org's role order, which Reorder changes and saves on its own.
+	import { tick, untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
-	import { api, errorMessage } from '$lib/api';
+	import { api, ApiError, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import CapabilityPicker from '$lib/components/CapabilityPicker.svelte';
+	import RoleOrder from './RoleOrder.svelte';
 	import { CAPABILITY_INFO, capabilitiesByGroup, VIEW, type Capability } from '$lib/capabilities';
 	import type { RoleView } from '$lib/types';
 	import type { PageProps } from './$types';
@@ -22,14 +25,40 @@
 	let saved = $derived.by<Record<string, Draft>>(() =>
 		Object.fromEntries(data.roles.map((r) => [r.id, { name: r.name, caps: [...r.capabilities] }]))
 	);
-	/** what is being edited; rebuilt from the saved state whenever that changes */
-	let draft = $state<Record<string, Draft>>({});
-	$effect(() => {
-		draft = structuredClone($state.snapshot(saved));
-	});
-
 	const same = (a: Capability[], b: Capability[]) =>
 		a.length === b.length && a.every((c) => b.includes(c));
+
+	/**
+	 * What is being edited, rebuilt from the saved state whenever that changes (a save, a reset, a
+	 * new or deleted role). A role's unsaved edits survive the rebuild unless that role is the one
+	 * just saved or reset, each field on its own: an edit of the ticks keeps a rename saved
+	 * meanwhile by someone else rather than sending the old name back.
+	 */
+	let draft = $state<Record<string, Draft>>({});
+	/** the saved state the draft was last built from: an edit is a draft that differs from it */
+	let base: Record<string, Draft> = {};
+	/** roles whose edits the next rebuild drops: just saved or reset */
+	const settled = new Set<string>();
+	$effect(() => {
+		const next: Record<string, Draft> = structuredClone($state.snapshot(saved));
+		untrack(() => {
+			const kept = Object.entries(next).map(([id, fresh]) => {
+				const d = draft[id];
+				const b = base[id];
+				if (!d || !b || settled.has(id)) return [id, fresh] as const;
+				return [
+					id,
+					{
+						name: d.name !== b.name ? d.name : fresh.name,
+						caps: !same(d.caps, b.caps) ? [...d.caps] : fresh.caps
+					}
+				] as const;
+			});
+			draft = Object.fromEntries(kept);
+			base = next;
+			settled.clear();
+		});
+	});
 	const changed = (r: RoleView) =>
 		!!draft[r.id] &&
 		(draft[r.id].name !== saved[r.id].name || !same(draft[r.id].caps, saved[r.id].caps));
@@ -73,14 +102,15 @@
 					name: d.name.trim(),
 					capabilities: d.caps
 				});
+				settled.add(r.id);
 				done++;
 			}
 			toast(`Saved ${done} role${done === 1 ? '' : 's'}.`, 'ok');
 		} catch (err) {
 			toast(`${errorMessage(err)}${done ? ` (${done} of ${todo.length} saved)` : ''}`, 'err');
 		} finally {
-			busy = false;
-			await invalidateAll();
+			// busy until the page holds what was saved: an edit made during the reload would be dropped
+			await invalidateAll().finally(() => (busy = false));
 		}
 	}
 	function discard() {
@@ -94,7 +124,10 @@
 			))
 		)
 			return;
-		await run(() => api('POST', `${orgPath}/roles/${r.id}/reset`), `${r.builtin} reset.`);
+		await run(async () => {
+			await api('POST', `${orgPath}/roles/${r.id}/reset`);
+			settled.add(r.id);
+		}, `${r.builtin} reset.`);
 	}
 	async function remove(r: RoleView) {
 		if (!(await confirmDialog(`Delete the '${r.name}' role?`, { okLabel: 'Delete', danger: true })))
@@ -111,6 +144,31 @@
 			adding = null;
 		}, `'${d.name.trim()}' added.`);
 	}
+
+	let ordering = $state(false);
+	let reorderButton: HTMLButtonElement | undefined = $state();
+	async function saveOrder(ids: string[]) {
+		busy = true;
+		let close = false;
+		try {
+			await api('PUT', `${orgPath}/roles/order`, { ids });
+			close = true;
+			toast('Role order saved.', 'ok');
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+			// a role was added or deleted since the dialog opened: close it, so Reorder opens it again
+			// on the current list
+			close = err instanceof ApiError && err.code === 'stale';
+		} finally {
+			await invalidateAll().finally(() => (busy = false));
+		}
+		if (!close) return;
+		// closed once the reload is in, then focus handed back to Reorder by hand: the dialog's
+		// own hand-back finds the button still disabled while the page is busy
+		ordering = false;
+		await tick();
+		reorderButton?.focus();
+	}
 </script>
 
 <div class="mb-4 flex flex-wrap items-center gap-3">
@@ -118,9 +176,17 @@
 		What each server role may do. Changing a role changes it for everyone who holds it, on every
 		server. Owners of the organisation always hold everything.
 	</div>
-	<button class="ml-auto btn" onclick={() => (adding = { name: '', caps: [VIEW] })} disabled={busy}
-		>New role</button
-	>
+	<span class="ml-auto inline-flex gap-2">
+		<button
+			class="btn"
+			bind:this={reorderButton}
+			onclick={() => (ordering = true)}
+			disabled={busy || data.roles.length < 2}>Reorder</button
+		>
+		<button class="btn" onclick={() => (adding = { name: '', caps: [VIEW] })} disabled={busy}
+			>New role</button
+		>
+	</span>
 </div>
 
 <div class="roles-grid table-wrap">
@@ -246,6 +312,10 @@
 			</div>
 		</form>
 	</Modal>
+{/if}
+
+{#if ordering}
+	<RoleOrder roles={data.roles} {busy} onsave={saveOrder} onclose={() => (ordering = false)} />
 {/if}
 
 <style>

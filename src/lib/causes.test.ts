@@ -3,8 +3,16 @@ import { causeKind, causeLabel, knownCauses } from './causes';
 
 describe('causeLabel', () => {
 	test('named weapons, tools, buildables and vehicles', () => {
-		expect(causeLabel('Id.Item.AK74M')).toBe('AK-74M');
+		expect(causeLabel('Id.Item.AK74M')).toBe('AK74');
+		expect(causeLabel('Id.Item.TAR21')).toBe('T-21');
+		expect(causeLabel('Id.Item.Glock17')).toBe('GGX 17');
+		expect(causeLabel('Id.Item.CombatBow')).toBe('Compound bow');
+		expect(causeLabel('Id.Item.Mosin')).toBe('Mosin Nagant');
+		expect(causeLabel('Id.Item.M249')).toBe('M249 SAW');
+		expect(causeLabel('Id.Item.Vector')).toBe('Super-45');
 		expect(causeLabel('Id.Item.WEPN_029')).toBe('Galil');
+		expect(causeLabel('Id.Item.MMGL')).toBe('MGL-40');
+		expect(causeLabel('Id.Item.CGM4')).toBe('MAAWS');
 		expect(causeLabel('Id.Item.M4')).toBe('M4');
 		expect(causeLabel('Id.Item.M67Grenade')).toBe('M67 frag grenade');
 		expect(causeLabel('Id.Item.Crowbar')).toBe('Halligan bar');
@@ -26,11 +34,23 @@ describe('causeLabel', () => {
 		expect(causeLabel('ID.Vehicle.WeaponExtension.STN_01.MistralAA')).toBe('Talon 9K-SAM');
 	});
 
-	test('unnamed tags read from their segments', () => {
-		expect(causeLabel('Id.Item.Mosin')).toBe('Mosin');
+	test('tags the game sends that have no name are listed in their own words', () => {
+		expect(causeLabel('Id.Item.SR_04')).toBe('SR 04');
+		expect(causeLabel('Id.Item.Launcher_04')).toBe('Launcher 04');
 		expect(causeLabel('Id.Item.WEPN_035')).toBe('WEPN 035');
-		expect(causeLabel('Id.Item.SMG_03')).toBe('SMG 03');
-		expect(causeLabel('Vehicle.Variant.Land.Wheeled.Ural.Default')).toBe('Ural');
+		expect(causeLabel('ID.Item.RepairTool.Drill.Light')).toBe('Light drill');
+		expect(causeLabel('Vehicle.Variant.Land.Wheeled.Humvee.Default')).toBe('Humvee');
+		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_05.MainBarrel')).toBe('STN 05 main gun');
+		const listed = new Set(knownCauses().map((c) => c.cause.toLowerCase()));
+		for (const tag of ['Id.Item.MMGL', 'Id.Item.Mosin', 'Vehicle.Variant.Stationary.STN_05'])
+			expect([tag, listed.has(tag.toLowerCase())]).toEqual([tag, true]);
+	});
+
+	test('unnamed tags read from their segments', () => {
+		expect(causeLabel('Id.Item.Makarov')).toBe('Makarov');
+		expect(causeLabel('Id.Item.WEPN_099')).toBe('WEPN 099');
+		expect(causeLabel('Id.Item.SMG_09')).toBe('SMG 09');
+		expect(causeLabel('Vehicle.Variant.Land.Wheeled.Jeep.Default')).toBe('Jeep');
 		expect(causeLabel('Vehicle.Variant.Land.Wheeled.Ural.Transport')).toBe('Ural (transport)');
 		expect(causeLabel('Vehicle.Variant.Air.Rotary.ROT_05.Default')).toBe('ROT 05');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_09.Turret')).toBe('STN 09 Turret');

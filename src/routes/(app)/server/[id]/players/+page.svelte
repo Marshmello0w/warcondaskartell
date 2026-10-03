@@ -20,10 +20,12 @@
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
-	let moderate = $derived(can(data.server.caps, 'players.moderate'));
+	let canKick = $derived(can(data.server.caps, 'players.kick'));
+	let canKill = $derived(can(data.server.caps, 'players.kill'));
+	let canMove = $derived(can(data.server.caps, 'players.move') && !!data.features.changeTeam);
 	let chat = $derived(can(data.server.caps, 'chat.send'));
 	let bans = $derived(can(data.server.caps, 'bans.manage'));
-	let anyAction = $derived(moderate || chat || bans);
+	let anyAction = $derived(canKick || canKill || canMove || chat || bans);
 	let notes = $derived(can(data.server.caps, 'players.notes'));
 	/** who is on now, or everyone who has played here */
 	let view = $state<'online' | 'past'>('online');
@@ -366,7 +368,7 @@
 							{#if anyAction}
 								<td class="py-1.5 text-right whitespace-nowrap">
 									<div class="inline-flex gap-2">
-										{#if chat || moderate}
+										{#if chat || canMove || canKill}
 											<div class="join">
 												{#if chat}
 													<button
@@ -376,7 +378,7 @@
 														onclick={() => open('whisper', p)}>Whisper</button
 													>
 												{/if}
-												{#if moderate && data.features.changeTeam}
+												{#if canMove}
 													<button
 														class="btn btn-sm"
 														disabled={busy}
@@ -384,7 +386,7 @@
 														onclick={() => open('move', p)}>Move</button
 													>
 												{/if}
-												{#if moderate}
+												{#if canKill}
 													<button
 														class="btn btn-sm"
 														disabled={busy}
@@ -394,9 +396,9 @@
 												{/if}
 											</div>
 										{/if}
-										{#if moderate || bans}
+										{#if canKick || bans}
 											<div class="join">
-												{#if moderate}
+												{#if canKick}
 													<button
 														class="btn btn-sm btn-danger"
 														disabled={busy}

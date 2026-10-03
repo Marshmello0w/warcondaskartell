@@ -23,7 +23,7 @@
 	$effect(() => {
 		const opener = document.activeElement as HTMLElement | null;
 		const first = box?.querySelector<HTMLElement>(
-			'input:not([type=hidden]):not([disabled]), textarea, select, button:not([data-close])'
+			'input:not([type=hidden]):not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([data-close]):not([disabled])'
 		);
 		first?.focus();
 		return () => {
