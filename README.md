@@ -80,6 +80,9 @@ What is in the box:
   slots, bans, score tick, sponsor image, a live cash-in-play chart for the current match, and the
   full `ServerSettings.ini` config document as a typed form (or the raw file) with validate/apply,
   revision conflict handling and copy/download.
+- **A modifier on every map**: the Map rotation tab adds Infantry Only or Hardcore to every rotation
+  entry whose map offers it, or takes it off them all, in one apply. It is there where the rotation
+  is edited through the config document (every live build so far), so it needs Config & settings.
 - **Group whispers**: one message to everyone on a faction, from the Overview's message box, or to
   the players ticked on the Players tab. The game has no route for it, so Warcon whispers each of
   them in turn and says who got it.
