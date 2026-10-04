@@ -929,7 +929,9 @@ Answers name capabilities by id:
 #### Reading a server
 
 `GET /api/live` answers what the panel last saw on each server the key covers, or on those named in
-`?ids=a,b` (ids the key cannot see are left out). It is what the panel's own pages show and costs
+`?ids=a,b` (ids the key cannot see are left out); `?org=<id>` narrows it to that organisation's,
+for a list of servers too long for a URL, and `?slim=1` leaves out each server's `players`. It is
+what the panel's own pages show and costs
 the game server nothing. By default the panel reads the players every two seconds and the status
 every five while people are on, and looks at an empty server every thirty seconds; `observedAt`
 says when it last looked. Poll this rather than the game actions. `GET /api/servers/:id/summary`
@@ -1000,7 +1002,8 @@ above, at every look), `kills` (`{"type": "kills", "serverId": â€¦, "kills": [â€
 feed brings them) and `outbox` (what automation rules did, only on servers where the key holds
 _Automation_), with a `: ping` comment every 15 seconds. The stream ends after five minutes;
 connect again. While it is open its servers are looked at every second, as for a panel tab left
-open, so hold it only while something needs updates that fast.
+open, so hold it only while something needs updates that fast, or add `passive=1`: the servers
+keep their usual cadence. It takes `org` and `slim` as above; `slim=1` sends `live` events only.
 
 #### Game actions
 
