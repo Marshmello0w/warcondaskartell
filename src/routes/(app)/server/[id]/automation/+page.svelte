@@ -1830,7 +1830,9 @@
 							<p class="text-[12px] text-mist-600">
 								Nobody playing is moved mid-match. An arrival who would put their side past the gap
 								goes to the lighter side, a player who switches onto the bigger side is put back,
-								and a new match is evened up.
+								and a new match is evened up{f.clans
+									? ', keeping clans together where the numbers allow'
+									: ''}.
 							</p>
 						{/if}
 					</fieldset>

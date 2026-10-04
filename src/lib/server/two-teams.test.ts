@@ -449,6 +449,41 @@ describe('twoTeamsStep balancing', () => {
 		);
 	});
 
+	test('with clan tags kept together, a new match moves players with no clanmates beside them first', () => {
+		const withClans = { ...B, clans: true };
+		// the clan first in the list, where list order would take the moves from it
+		const players = [
+			...Array.from({ length: 6 }, (_, i) => named(`t${i}`, `[ABC] Mate${i}`, M)),
+			...side('m', 6, M),
+			...side('v', 2, V)
+		];
+		const r = bal(seeded(players, withClans), players, 1000, { newMatch: true }, withClans);
+		expect(r.moves.map((m) => [m.steamId, m.to])).toEqual([
+			['m0', V],
+			['m1', V],
+			['m2', V],
+			['m3', V]
+		]);
+	});
+
+	test('a new match moves first the clan members whose clan is on the side they are short of', () => {
+		const withClans = { ...B, clans: true };
+		// 10 v 6, two of the clan on the bigger side, five on the smaller
+		const players = [
+			...side('m', 8, M),
+			named('a0', '[ABC] One', M),
+			named('a1', '[ABC] Two', M),
+			...Array.from({ length: 5 }, (_, i) => named(`b${i}`, `[ABC] Mate${i}`, V)),
+			p('v0', V)
+		];
+		const r = bal(seeded(players, withClans), players, 1000, { newMatch: true }, withClans);
+		// joining their clan evens the sides: nobody else moves
+		expect(r.moves.map((m) => [m.steamId, m.to])).toEqual([
+			['a0', V],
+			['a1', V]
+		]);
+	});
+
 	test('clanmates arriving on opposite sides are put together with one move', () => {
 		const withClans = { ...B, clans: true };
 		const players = [...side('v', 4, V), ...side('m', 4, M)];

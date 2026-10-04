@@ -462,12 +462,23 @@ export function twoTeamsStep(
 	// Arrivals, and everyone after a match ends: kept where they are while the sides stay within the
 	// gap (or with their clan), else placed on the lighter side. Right after a match end, not while a
 	// quarter or more have yet to pick a side. In no set order: the game's list order would make the
-	// same players the ones moved at every match start.
+	// same players the ones moved at every match start. With clan tags kept together, players go in
+	// order of what a move would cost their clan: those whose clan is mostly on another side first
+	// (a move takes them to it), then those with no clanmates beside them, then the rest, fewest
+	// clanmates beside them first, so evening a match up splits as few clans as it can.
 	if ((state.holdPending || now < state.holdUntil) && unpicked.length * 4 >= players.length)
 		return { state, moves, whispers, stopped };
+	const splits = (p: { name: string; faction: string | null }) => {
+		const tag = cfg.clans && isOpen(p.faction) ? clanTag(p.name) : null;
+		if (!tag) return 0;
+		const sides = clans.get(tag);
+		const beside = (sides?.get(p.faction!) ?? 1) - 1;
+		const clanSide = clanSideOf(p);
+		return beside - (clanSide !== null && clanSide !== p.faction ? (sides?.get(clanSide) ?? 0) : 0);
+	};
 	const shuffled = players
-		.map((p) => ({ p, k: random() }))
-		.sort((a, b) => a.k - b.k)
+		.map((p) => ({ p, cost: splits(p), k: random() }))
+		.sort((a, b) => a.cost - b.cost || a.k - b.k)
 		.map((x) => x.p);
 	for (const p of shuffled) {
 		if (waiting(p) || !isOpen(p.faction) || (state.sides.get(p.steamId)?.side ?? null) !== null)
