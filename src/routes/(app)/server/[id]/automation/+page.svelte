@@ -2449,8 +2449,10 @@
 							<td>{d.triggerName}</td>
 							<td class="font-mono text-[12px]">{actionLabel(d.action)}</td>
 							<td class="font-mono text-[12px]"
-								>{#if isSteamId(d.target)}<a class="link" href="/server/{id}/players/{d.target}"
-										>{d.target}</a
+								>{#if isSteamId(d.target)}<a
+										class="link"
+										href="/server/{id}/players/{d.target}"
+										data-sveltekit-preload-data="tap">{d.target}</a
 									>{:else}{d.target}{/if}</td
 							>
 							<td

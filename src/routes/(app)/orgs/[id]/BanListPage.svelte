@@ -171,8 +171,10 @@
 				<tr class={e.expired ? 'text-mist-400' : ''}>
 					<td>
 						{#if dossierBase}
-							<a href="{dossierBase}/{e.steamId}" class="font-medium text-accent hover:underline"
-								>{e.name || e.steamId}</a
+							<a
+								href="{dossierBase}/{e.steamId}"
+								data-sveltekit-preload-data="tap"
+								class="font-medium text-accent hover:underline">{e.name || e.steamId}</a
 							>
 						{:else}
 							<span class="font-medium">{e.name || e.steamId}</span>

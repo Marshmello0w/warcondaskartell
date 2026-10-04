@@ -241,6 +241,7 @@
 									<div class="flex flex-wrap items-center gap-1.5">
 										<a
 											href={dossier(p)}
+											data-sveltekit-preload-data="tap"
 											class="truncate font-medium hover:text-accent hover:underline"
 											title="Open dossier">{p.name}</a
 										>

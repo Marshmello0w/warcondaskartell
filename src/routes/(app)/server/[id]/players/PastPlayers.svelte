@@ -168,6 +168,7 @@
 						<div class="flex flex-wrap items-baseline gap-x-2">
 							<a
 								href="/server/{encodeURIComponent(server.id)}/players/{p.steamId}"
+								data-sveltekit-preload-data="tap"
 								class="font-medium hover:text-accent hover:underline"
 								title="Open profile">{p.name}</a
 							>
