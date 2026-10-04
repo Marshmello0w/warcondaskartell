@@ -17,9 +17,9 @@ export const TWO_TEAMS_RETRY_MS = 30_000;
 /** A placed player is told once; the note is forgotten after this long away, so a return next day is told again. */
 export const TWO_TEAMS_FORGET_MS = 2 * 3600_000;
 /**
- * Moves asked for per second of the player-list cadence. Each move is two game requests (move,
- * then kill), so a full server's sort at a match start goes out over half a minute instead of at
- * once, under the listener's limit on requests from one address.
+ * Moves asked for per second of the player-list cadence, so a full server's sort at a match start
+ * goes out over half a minute instead of at once, under the listener's limit on requests from one
+ * address.
  */
 export const TWO_TEAMS_MOVES_PER_SECOND = 3;
 /**
@@ -29,7 +29,7 @@ export const TWO_TEAMS_MOVES_PER_SECOND = 3;
 export const TWO_TEAMS_MAX_MOVES_PER_LOOK = 6;
 /**
  * A player asked to move this many times within TWO_TEAMS_ASK_WINDOW_MS is left where they are
- * until the window passes: something keeps putting them back, and every move kills them. Put-backs
+ * until the window passes: something keeps putting them back. Put-backs
  * count on their own, and only until the player is seen on the side they were put back on, so a
  * player who keeps switching onto the bigger side is put back every time, and a put-back that does
  * not take is asked this many times.

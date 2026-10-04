@@ -1852,8 +1852,7 @@
 							{#each FACTIONS as x (x)}<option value={x}></option>{/each}
 						</datalist>
 						<p class="text-[12px] text-mist-600">
-							Everyone on it is moved to the smaller other side (or their clan's, within the gap)
-							and respawns there.
+							Everyone on it is moved to the smaller other side (or their clan's, within the gap).
 						</p>
 					</fieldset>
 					<fieldset class="space-y-2">
@@ -1904,8 +1903,7 @@
 						move nobody</label
 					>
 					<p class="note">
-						Moves go out a few at a time as the player list refreshes; each kills the player so they
-						respawn on the new side.
+						Moves go out a few at a time as the player list refreshes, without killing the player.
 						{#if f.balance}
 							A player who switches onto the bigger side is put back every time. A player asked to
 							move three times in ten minutes for any other reason, or put back three times without

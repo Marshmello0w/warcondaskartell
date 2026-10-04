@@ -1236,6 +1236,8 @@ async function evalTwoTeams(
 			params: {
 				steamId: m.steamId,
 				faction: m.to,
+				// the move alone: whether the game needs the kill to respawn them is not settled
+				kill: false,
 				from: m.from,
 				rule: config,
 				mem: kept.id,

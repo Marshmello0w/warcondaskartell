@@ -316,7 +316,7 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 			return 'The match started before this was sent.';
 	}
 	// A Team balance move for a player already off the side it was decided from: the move before it
-	// landed, or they changed side themselves. Moving (and killing) someone twice is not harmless.
+	// landed, or they changed side themselves. Moving someone twice is not harmless.
 	if (row.triggerKind === 'two_teams' && row.action === 'changeTeam') {
 		const from = (row.params as { from?: string } | null)?.from;
 		const p = m.players.find((q) => q.steamId === row.steamId);
@@ -464,7 +464,7 @@ async function release(env: Env, row: OutboxRow): Promise<void> {
 /**
  * Sends one row and records what happened. 'held': the server is held and this row was not sent;
  * 'refused': the game refused this row, or a later step of it, for sending too fast (a refused row
- * is failed; a move whose kill was refused is delivered) and the server is now held. Either way
+ * is failed; a rule kill whose whisper was refused is delivered) and the server is now held. Either way
  * the chain puts the rest back.
  */
 async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' | void> {
@@ -521,8 +521,8 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 			((row.action === RULE_KILL || !OWN_WORDS.has(row.action)) && messageOf(result)) ||
 				row.okMessage
 		);
-		// Done, but a later step was refused for sending too fast (changeTeam's kill, a rule kill's
-		// whisper): hold the rest.
+		// Done, but a later step was refused for sending too fast (a rule kill's whisper): hold the
+		// rest.
 		const wait = retryAfterOf(result);
 		if (wait) {
 			held.set(row.serverId, Math.max(held.get(row.serverId) ?? 0, Date.now() + wait));
@@ -739,7 +739,7 @@ async function deliverPanelBan(env: Env, row: OutboxRow): Promise<void> {
 	}
 }
 
-/** The wait an action's answer asks for (changeTeam's refused kill), or 0. */
+/** The wait an action's answer asks for (a later step refused for sending too fast), or 0. */
 const retryAfterOf = (r: unknown): number =>
 	r && typeof r === 'object' && typeof (r as { retryAfterMs?: unknown }).retryAfterMs === 'number'
 		? (r as { retryAfterMs: number }).retryAfterMs
