@@ -66,6 +66,7 @@ import {
 	type Tallies
 } from './match-players';
 import { isOwner, LostOwnership, withOwnedTransaction } from './leadership';
+import { lockTotals } from './totals';
 import { settings } from './settings';
 import { isWatched } from './interest';
 import { emit } from './events';
@@ -682,6 +683,9 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	try {
 		if (needWrite)
 			await withOwnedTransaction(env, async (tx) => {
+				// A session closing adds to the player's totals: the server's totals lock comes
+				// before any row is touched (totals.ts).
+				if (players && presenceDue && diff.left.length) await lockTotals(tx, server.id);
 				if (players && presenceDue)
 					await persistPresence(
 						tx,
@@ -788,6 +792,9 @@ async function observationFailed(
 	try {
 		await withOwnedTransaction(env, async (tx) => {
 			if (m.failures >= OFFLINE_AFTER_FAILURES) {
+				// Closing the sessions adds to the totals, and the tallies go to the open match: the
+				// server's totals lock first (totals.ts).
+				await lockTotals(tx, m.server.id);
 				// Close every open session once; a rollback below reloads the map so this retries.
 				if (!m.presence.loaded)
 					await loadPresence(
@@ -927,6 +934,10 @@ async function reconcileMatch(
 	prevStatusAt: number
 ): Promise<void> {
 	const serverId = m.server.id;
+	// Writing lines or ending a match can touch the totals: the server's totals lock before the
+	// match row is read, so a purge cannot come in between (totals.ts). An abandoned match, known
+	// only once the open row is read, takes it below.
+	if (ended || [...m.tallies.values()].some((t) => t.dirty)) await lockTotals(db, serverId);
 	const [current] = await db
 		.select({
 			id: matches.id,
@@ -953,6 +964,7 @@ async function reconcileMatch(
 		m.tallies = closed.carried;
 	} else if (current && stale) {
 		// Abandoned: no scores, no winner. What the tallies hold belongs to the map now on.
+		await lockTotals(db, serverId);
 		await db.update(matches).set({ endedAt: ts }).where(eq(matches.id, current.id));
 	} else if (current) {
 		const due = [...m.tallies.values()].filter((t) => t.dirty);

@@ -8,6 +8,7 @@ import {
 	customType,
 	index,
 	integer,
+	numeric,
 	pgTable,
 	primaryKey,
 	real,
@@ -579,6 +580,45 @@ export const matchPlayers = pgTable(
 	]
 );
 export type MatchPlayerRow = typeof matchPlayers.$inferSelect;
+
+/**
+ * Each player's settled totals on a server, for the all-time reads (boards and their export,
+ * career ranks, the placeholders' stats, the risk record), which add the open sessions: the sums
+ * of the player's closed sessions and of their lines of ended matches, with the boards' result
+ * rule. A row exists while the pair has either. Kept by triggers on player_sessions, matches and
+ * match_players in the writer's own transaction, whoever the writer is (migration 0038 holds the
+ * rules); the application only reads it, and takes player_totals_lock(server) before it closes a
+ * session, ends a match or purges (totals.ts).
+ */
+export const playerTotals = pgTable(
+	'player_totals',
+	{
+		serverId: text('server_id').notNull(),
+		steamId: text('steam_id').notNull(),
+		/** closed sessions */
+		sessions: integer('sessions').notNull().default(0),
+		/** SUM(EXTRACT(EPOCH FROM left_at - joined_at)) over them, exact */
+		seconds: numeric('seconds').notNull().default('0'),
+		seedSeconds: bigint('seed_seconds', { mode: 'number' }).notNull().default(0),
+		cash: bigint('cash', { mode: 'number' }).notNull().default(0),
+		/** MAX(last_seen) over them; null without one */
+		lastSeen: ts('last_seen'),
+		/** lines of ended matches */
+		matches: integer('matches').notNull().default(0),
+		kills: bigint('kills', { mode: 'number' }).notNull().default(0),
+		deaths: bigint('deaths', { mode: 'number' }).notNull().default(0),
+		headshots: bigint('headshots', { mode: 'number' }).notNull().default(0),
+		teamKills: bigint('team_kills', { mode: 'number' }).notNull().default(0),
+		suicides: bigint('suicides', { mode: 'number' }).notNull().default(0),
+		vehicleKills: bigint('vehicle_kills', { mode: 'number' }).notNull().default(0),
+		killStreak: integer('kill_streak').notNull().default(0),
+		deathStreak: integer('death_streak').notNull().default(0),
+		wins: integer('wins').notNull().default(0),
+		losses: integer('losses').notNull().default(0),
+		draws: integer('draws').notNull().default(0)
+	},
+	(t) => [primaryKey({ columns: [t.serverId, t.steamId] })]
+);
 
 // ---- Player intelligence: org-scoped notes and watchlist, cached Steam data, ban snapshots ------
 

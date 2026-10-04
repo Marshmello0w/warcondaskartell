@@ -97,6 +97,46 @@ const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sq
 		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws
 		  FROM sess FULL JOIN mt USING (steam_id))`;
 
+/**
+ * `base` for all time, from the settled totals: `sess` is the pairs with a closed session plus
+ * the open sessions, `mt` the pairs with a line of an ended match, then the same join. The same
+ * rows and values as base(ids, EPOCH, steamIds): the seconds are exact numeric sums either way,
+ * and a player with no session at all still gets the join's zeros. Also read by the exactness
+ * test (src/test/player-totals.test.ts).
+ */
+export const totalsBase = (ids: string[], steamIds: string[] | null = null) => sql`
+	sess AS (
+		SELECT steam_id, SUM(seconds) / 60 AS minutes, SUM(seed_seconds) / 60.0 AS seed_minutes,
+		       MAX(last_seen) AS last_seen, SUM(cash) AS cash
+		  FROM (SELECT steam_id, seconds, seed_seconds, cash, last_seen FROM player_totals
+		         WHERE server_id IN ${ids} AND sessions > 0
+		           ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}
+		        UNION ALL
+		        SELECT steam_id, EXTRACT(EPOCH FROM (now() - joined_at)), seed_seconds, cash, last_seen
+		          FROM player_sessions WHERE server_id IN ${ids} AND left_at IS NULL
+		           ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}) s
+		 GROUP BY steam_id),
+	mt AS (
+		SELECT steam_id, SUM(matches) AS matches,
+		       SUM(kills) AS kills, SUM(deaths) AS deaths, SUM(headshots) AS headshots,
+		       SUM(team_kills) AS team_kills, SUM(suicides) AS suicides, SUM(vehicle_kills) AS vehicle_kills,
+		       MAX(kill_streak) AS kill_streak, MAX(death_streak) AS death_streak,
+		       SUM(wins) AS wins, SUM(losses) AS losses, SUM(draws) AS draws
+		  FROM player_totals WHERE server_id IN ${ids} AND matches > 0
+		   ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}
+		 GROUP BY steam_id),
+	base AS (
+		SELECT steam_id,
+		       COALESCE(sess.minutes, 0) AS minutes, COALESCE(sess.seed_minutes, 0) AS seed_minutes,
+		       COALESCE(sess.cash, 0) AS cash, sess.last_seen,
+		       COALESCE(mt.kills, 0) AS kills, COALESCE(mt.deaths, 0) AS deaths,
+		       COALESCE(mt.headshots, 0) AS headshots, COALESCE(mt.team_kills, 0) AS team_kills,
+		       COALESCE(mt.suicides, 0) AS suicides, COALESCE(mt.vehicle_kills, 0) AS vehicle_kills,
+		       COALESCE(mt.kill_streak, 0) AS kill_streak, COALESCE(mt.death_streak, 0) AS death_streak,
+		       COALESCE(mt.matches, 0) AS matches, COALESCE(mt.wins, 0) AS wins,
+		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws
+		  FROM sess FULL JOIN mt USING (steam_id))`;
+
 /** All recorded games on these servers, batched for the connected-player risk badges. */
 export async function riskPerformanceFor(
 	env: Env,
