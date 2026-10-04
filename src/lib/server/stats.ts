@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { ServerRow, SessionUser } from './access';
 import { writeAudit } from './audit';
+import { forgetBoards } from './leaderboards';
 
 export interface PurgeCounts {
 	kills: number;
@@ -33,6 +34,8 @@ export async function purgeServerStats(
 		const matches = await del('matches');
 		return { kills, matches, matchPlayers };
 	});
+	// The boards this web process keeps for a minute would show the purged numbers until then.
+	forgetBoards(server.id);
 	await writeAudit(env, req, {
 		actor,
 		server: { id: server.id, name: server.name },
