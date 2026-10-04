@@ -328,6 +328,7 @@
 							<td
 								><a
 									href="{base}/{p.steamId}"
+									data-sveltekit-preload-data="tap"
 									class="font-medium text-mist-100 underline decoration-mist-600 underline-offset-[3px] hover:text-accent hover:decoration-accent"
 									>{p.name}</a
 								>

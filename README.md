@@ -728,6 +728,8 @@ result (win, loss, draw) is read from the match's winner and final scores agains
 player played; a match with no winner and nobody scoring, or one abandoned by a restart, has no
 result. Playtime and seed time come from player sessions; kills per hour leaves seed time out;
 cash is summed over sessions, each banked across its matches like kills. Names link to the dossier.
+A page of a board is read at most once a minute for the same servers and settings, so a match
+that just ended can take up to a minute to appear (a stats purge shows at once).
 
 **Export CSV** on the tab downloads the board as it is set (scope, range, sort, playtime floor),
 from the top and every page of it, up to 10,000 players: rank, SteamID, name, playtime and seed

@@ -130,6 +130,7 @@
 				<div class="mt-1 font-display text-xl font-semibold tabular">{a.value}</div>
 				<a
 					href={hrefFor(a.steamId)}
+					data-sveltekit-preload-data="tap"
 					class="block truncate text-[12.5px] text-mist-400 hover:text-accent hover:underline"
 					>{a.name}</a
 				>
@@ -164,7 +165,11 @@
 			{#each rows as l (l.steamId)}
 				<tr>
 					<td>
-						<a href={hrefFor(l.steamId)} class="hover:text-accent hover:underline">{l.name}</a>
+						<a
+							href={hrefFor(l.steamId)}
+							data-sveltekit-preload-data="tap"
+							class="hover:text-accent hover:underline">{l.name}</a
+						>
 						{#if showIds}<span class="block font-mono text-[11px] text-mist-600">{l.steamId}</span
 							>{/if}
 					</td>

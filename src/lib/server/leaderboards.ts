@@ -2,12 +2,12 @@
 // of every match (match_players: the game's own kills and deaths, the feed's headshots, team
 // kills, suicides, vehicle kills and streaks, time on and the side played) joined to its match
 // for the result, and the sessions for playtime, seed time, the last name and cash.
-// Nothing is precomputed. The queries ride the existing indexes: matches (server_id,
-// started_at), match_players (match_id, steam_id) and (steam_id, match_id), player_sessions
-// (server_id, last_seen) and (steam_id, joined_at). Only matches that have ended count, and a
-// match is in a range by when it ended; the match in progress is on the live page. The result
-// of a match for a player (win, loss, draw, none) is the rule in $lib/leaderboard, written out
-// again in SQL below for the aggregates.
+// Nothing is precomputed; a page of a board is kept for a minute (loadBoard). The queries ride
+// the existing indexes: matches (server_id, started_at), match_players (match_id, steam_id) and
+// (steam_id, match_id), player_sessions (server_id, last_seen) and (steam_id, joined_at). Only
+// matches that have ended count, and a match is in a range by when it ended; the match in
+// progress is on the live page. The result of a match for a player (win, loss, draw, none) is the
+// rule in $lib/leaderboard, written out again in SQL below for the aggregates.
 import { sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { servers } from './db/schema';
@@ -240,9 +240,50 @@ async function boardSlice(
 		  FROM page r`)) as BaseRow[];
 }
 
+/**
+ * A page of a board is the same for everyone who may see these servers, and each one is an
+ * aggregate over its whole range: each (servers, query) is read once a minute per web process,
+ * and the requests that ask for it while it is being read wait for that read. The key is the
+ * server ids the caller's own check settled on, so a board over servers someone was not given
+ * is never theirs. A minute behind is the price: a match that just ended may not be on it yet.
+ */
+const BOARD_TTL_MS = 60_000;
+/** The most pages kept: fifty rows each, a few megabytes at most. */
+const BOARD_CACHE_MAX = 500;
+const boardCache = new Map<string, { ids: string[]; until: number; view: Promise<BoardView> }>();
+
+/** Forgets the boards kept over this server (its stats were purged), or every board. */
+export function forgetBoards(serverId?: string): void {
+	for (const [key, hit] of boardCache)
+		if (serverId === undefined || hit.ids.includes(serverId)) boardCache.delete(key);
+}
+
 export async function loadBoard(env: Env, ids: string[], q: BoardQuery): Promise<BoardView> {
 	const empty: BoardView = { query: q, rows: [], total: 0, pageSize: BOARD_PAGE, hasFeed: false };
 	if (!ids.length) return empty;
+	const sorted = [...new Set(ids)].sort();
+	const key = JSON.stringify([sorted, q.scope, q.range, q.sort, q.dir, q.page, q.minMinutes]);
+	const now = Date.now();
+	const hit = boardCache.get(key);
+	if (hit && hit.until > now) return hit.view;
+	const entry = { ids: sorted, until: now + BOARD_TTL_MS, view: readBoard(env, sorted, q) };
+	boardCache.delete(key);
+	boardCache.set(key, entry);
+	// A failed read is not kept: the next request reads again.
+	entry.view.catch(() => {
+		if (boardCache.get(key) === entry) boardCache.delete(key);
+	});
+	if (boardCache.size > BOARD_CACHE_MAX) {
+		for (const [k, e] of boardCache) if (e.until <= now) boardCache.delete(k);
+		for (const k of boardCache.keys()) {
+			if (boardCache.size <= BOARD_CACHE_MAX) break;
+			boardCache.delete(k);
+		}
+	}
+	return entry.view;
+}
+
+async function readBoard(env: Env, ids: string[], q: BoardQuery): Promise<BoardView> {
 	const offset = (q.page - 1) * BOARD_PAGE;
 	const [rows, hasFeed] = await Promise.all([
 		boardSlice(env, ids, q, BOARD_PAGE, offset),
