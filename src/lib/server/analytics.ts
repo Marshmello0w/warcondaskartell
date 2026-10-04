@@ -700,7 +700,7 @@ export async function loadCashSince(
 	const rows = await env.db.execute<{ ts: Date; cash: { name: string; cash: number }[] }>(sql`
 			SELECT ts, cash FROM samples
 			 WHERE server_id = ${serverId} AND ts >= ${since} AND ok AND cash IS NOT NULL
-			 ORDER BY ts DESC LIMIT ${limit}`);
+			 ORDER BY ts DESC NULLS LAST LIMIT ${limit}`);
 	return rows.reverse().map((r) => {
 		const point: CashPoint = { ts: isoOf(r.ts), total: 0, factions: {} };
 		for (const c of Array.isArray(r.cash) ? r.cash : []) addCash(point, c.name ?? '', num(c.cash));

@@ -381,7 +381,11 @@ export async function recentKills(
 		.select()
 		.from(kills)
 		.where(killWhere(serverId, before, filter, match))
-		.orderBy(desc(kills.ts), desc(kills.eventTime))
+		// ts DESC NULLS LAST, as kills_server_ts_idx is built (Drizzle writes .desc() so): plain DESC
+		// cannot use it, and the planner then walked every server's kills newest first through the
+		// ts index looking for this server's, up to the whole table for a quiet one (the hosted
+		// panel's costliest statement, 2026-10-04).
+		.orderBy(sql`${kills.ts} desc nulls last`, desc(kills.eventTime))
 		.limit(limit);
 	return rows.map(killView);
 }

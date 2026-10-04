@@ -881,7 +881,8 @@ async function evalEmptyReset(
 				or(eq(samples.ok, false), sql`${samples.playerCount} > 0`)
 			)
 		)
-		.orderBy(desc(samples.ts))
+		// NULLS LAST as samples_server_ts_idx is built: back through this server's samples only
+		.orderBy(sql`${samples.ts} desc nulls last`)
 		.limit(1);
 	const [oldest] = busy
 		? []

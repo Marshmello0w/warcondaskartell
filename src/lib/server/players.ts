@@ -558,7 +558,8 @@ async function playerCombat(
 				or(eq(kills.killerSteamId, steamId), eq(kills.victimSteamId, steamId))
 			)
 		)
-		.orderBy(desc(kills.ts))
+		// NULLS LAST as the indexes are built, so no plan walks every server's kills (feed.ts)
+		.orderBy(sql`${kills.ts} desc nulls last`)
 		.limit(25);
 	return {
 		...summary,
