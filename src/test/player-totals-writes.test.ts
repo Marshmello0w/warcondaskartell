@@ -5,7 +5,9 @@
 // transactions on one server, the worker's (a close, a match end, an abandoned match, leavers'
 // lines, the offline transition) and a purge, each holding the server's totals lock while the
 // other waits for it, in both orders: no deadlock, and the totals exact after. Taking the lock
-// first is what makes that so: without it, an abandoned match against a purge deadlocks. A
+// first is what makes that so: without it, an abandoned match against a purge deadlocks; and,
+// taken before the lease row, a purge holding it does not hold up the lease renewal, while a write
+// that waited for it as the lease changed hands and came back is dropped. A
 // transaction that is not READ COMMITTED is refused. Last, migration 0038 run over a database that
 // already has history builds the totals the reads expect.
 import { beforeAll, describe, expect, test } from 'bun:test';
@@ -18,6 +20,13 @@ import { eq, sql } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import { connect, runMigrations, type DbOrTx } from '$lib/server/db';
 import { matches, matchPlayers, playerSessions } from '$lib/server/db/schema';
+import {
+	acquireOrRenew,
+	isOwner,
+	ownershipPeriod,
+	StaleOwnership,
+	withOwnedTransaction
+} from '$lib/server/leadership';
 import { writeMatchPlayers } from '$lib/server/match-players';
 import { purgeServerStats } from '$lib/server/stats';
 import { lockTotals } from '$lib/server/totals';
@@ -387,6 +396,68 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 				await exact([h.A]);
 			});
 		}
+
+		test('a purge holding the totals lock does not hold up the lease: the worker waits for the lock before the lease row', async () => {
+			const h = await history();
+			expect(await acquireOrRenew(env, 'totals-lease')).toBe(true);
+			const deleted = gate();
+			const go = gate();
+			const purging = purge(h.A, go.opened, deleted.open);
+			await deleted.opened;
+			const writing = withOwnedTransaction(env, (tx) => tx.execute(sql`SELECT 1`), {
+				totalsOf: h.A
+			});
+			// with the lease row held FOR SHARE by the waiting write, the renewal would queue
+			// behind it until the purge let go
+			let renewed: boolean | string = 'not tried';
+			try {
+				await untilWaiting();
+				renewed = await Promise.race([
+					acquireOrRenew(env, 'totals-lease'),
+					Bun.sleep(3_000).then(() => 'stalled')
+				]);
+			} finally {
+				go.open();
+				await Promise.allSettled([purging, writing]);
+			}
+			expect(renewed).toBe(true);
+			await exact([h.A]);
+		});
+
+		test('a write that waited for the totals lock while the lease changed hands and came back is dropped, not written', async () => {
+			const h = await history();
+			expect(await acquireOrRenew(env, 'totals-lease')).toBe(true);
+			const period = ownershipPeriod();
+			const deleted = gate();
+			const go = gate();
+			const purging = purge(h.A, go.opened, deleted.open);
+			await deleted.opened;
+			let ran = false;
+			const writing = withOwnedTransaction(
+				env,
+				async () => {
+					ran = true;
+				},
+				{ totalsOf: h.A, period }
+			);
+			let outcome: unknown = 'not settled';
+			try {
+				await untilWaiting();
+				// another process takes the lease and lets it lapse; this one takes it back
+				await env.db.execute(sql`
+					UPDATE worker_ownership SET token = 'another process', acquired_at = now(),
+					       lease_until = now() - interval '1 second'`);
+				expect(await acquireOrRenew(env, 'totals-lease')).toBe(true);
+				expect(ownershipPeriod()).not.toBe(period);
+			} finally {
+				go.open();
+				const [w] = await Promise.allSettled([writing, purging]);
+				outcome = w.status === 'rejected' ? w.reason : 'written';
+			}
+			expect(ran).toBe(false);
+			expect(outcome).toBeInstanceOf(StaleOwnership);
+			expect(isOwner()).toBe(true);
+		});
 
 		test('without the lock first, an abandoned match against a purge deadlocks', async () => {
 			const h = await history();
