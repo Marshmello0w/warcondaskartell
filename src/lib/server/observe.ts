@@ -74,6 +74,7 @@ import { observations, observationSeconds } from './metrics';
 import { notifyWatchedJoins } from './webhook-delivery';
 import { nextDue, withHold } from './poller-schedule';
 import { TWO_TEAMS_RETRY_MS } from './two-teams';
+import { CLAN_TEAMS_PLAYERS_MS } from './clan-teams';
 import { cashByFaction } from '$lib/cash';
 import type { Features, LiveView, Player, Status } from '$lib/types';
 
@@ -100,6 +101,8 @@ export interface ServerMemory {
 	playersIntervalMs: number;
 	/** an enabled Two-team rule needs fresh rosters for its 15-second retries */
 	twoTeamsOn: boolean;
+	/** Clan-only grouping should catch a faction pick within five seconds without a viewer. */
+	clanTeamsOn: boolean;
 	failures: number;
 	/** no look before this time: the listener answered 429 with Retry-After (not a failure) */
 	holdUntil: number;
@@ -179,6 +182,7 @@ export function memoryFor(server: ServerRow, org: OrgRow): ServerMemory {
 			statusDueAt: 0,
 			playersIntervalMs: 0,
 			twoTeamsOn: false,
+			clanTeamsOn: false,
 			failures: 0,
 			holdUntil: 0,
 			ok: false,
@@ -396,6 +400,7 @@ export function cadenceOf(tier: Tier, failures = 0): { players: number; status: 
 function memoryCadence(m: ServerMemory): { players: number; status: number } {
 	const c = cadenceOf(m.tier, m.failures);
 	if (m.twoTeamsOn && m.tier !== 'offline') c.players = Math.min(c.players, TWO_TEAMS_RETRY_MS);
+	if (m.clanTeamsOn && m.tier !== 'offline') c.players = Math.min(c.players, CLAN_TEAMS_PLAYERS_MS);
 	return c;
 }
 
@@ -551,6 +556,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 		: [];
 	const rows = m.status ? await enabledTriggers(env, server.id) : [];
 	m.twoTeamsOn = rows.some((r) => r.kind === 'two_teams');
+	m.clanTeamsOn = rows.some((r) => r.kind === 'clan_teams');
 	// A risk kick judges whoever is on the server, not only a join: joiners at once, a player back
 	// after missing a look at once (a kicked player reconnecting inside the leave grace is the
 	// same session, not a join), and everyone on again every RISK_RECHECK_MS in one batch, which

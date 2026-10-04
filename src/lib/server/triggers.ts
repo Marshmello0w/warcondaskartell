@@ -13,6 +13,7 @@
 //                or across the org
 //   two_teams    close one faction and move its players to the smaller of the other two
 //                (two-teams.ts)
+//   clan_teams   group matching clan tags on their first member's side, without team balancing
 //   kill_distance  flag, warn, kick or ban a player who kills with a chosen weapon or vehicle, from
 //                further than it reaches or from any distance (kill-distance.ts, acted on in
 //                feed-events.ts)
@@ -109,6 +110,7 @@ import { banNeeds, PANEL_BAN, type PanelBanParams } from './rule-ban';
 import { causeLabel } from '$lib/causes';
 import {
 	emptyTwoTeamsState,
+	clanTag,
 	teamName,
 	TWO_TEAMS_ASK_WINDOW_MS,
 	TWO_TEAMS_MAX_ASKS,
@@ -125,6 +127,12 @@ import { DEFAULT_SCORE_CAP } from '$lib/match';
 import { mapName } from '$lib/format';
 import { statsIn, usesStats } from '$lib/placeholders';
 import { settings } from './settings';
+import {
+	clanTeamsMoveConfig,
+	clanTeamsSettingsKey,
+	clanTeamsStep,
+	type ClanTeamsConfig
+} from './clan-teams';
 import { playerStats, riskPerformanceFor } from './leaderboards';
 import type { RiskPerformance } from './risk';
 import {
@@ -197,7 +205,8 @@ const RULE_NEEDS: Record<
 	ping_kick: ['players.kick', 'kicks players'],
 	team_kill: ['players.kick', 'kicks players'],
 	kill_rate: ['players.kick', 'flags players'],
-	two_teams: ['players.move', 'moves players between teams']
+	two_teams: ['players.move', 'moves players between teams'],
+	clan_teams: ['players.move', 'moves clan members between teams']
 };
 
 /**
@@ -262,7 +271,7 @@ export async function createTrigger(
 		// Seed time is one count per server, taken against one threshold, so one rule holds it. Two
 		// Team balance rules would move a player back and forth, killing them at every move. Saves to
 		// one server take turns, so two at once cannot both find none.
-		if (kind === 'seed_reward' || kind === 'two_teams') {
+		if (kind === 'seed_reward' || isTeamMoveRule(kind)) {
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`triggers:${server.id}`}))`);
 			const [other] = await tx
 				.select({ name: triggers.name })
@@ -276,6 +285,7 @@ export async function createTrigger(
 					'duplicate'
 				);
 		}
+		if (isTeamMoveRule(kind) && body.enabled) await requireSingleTeamRule(tx, server.id, kind);
 		const [inserted] = await tx
 			.insert(triggers)
 			.values({
@@ -305,6 +315,31 @@ export async function createTrigger(
 	return shape(row);
 }
 
+export const isTeamMoveRule = (kind: string): boolean =>
+	kind === 'two_teams' || kind === 'clan_teams';
+
+/** Two different team controllers must not undo each other's moves and kill a player repeatedly. */
+async function requireSingleTeamRule(
+	db: Pick<Env['db'], 'select'>,
+	serverId: string,
+	kind: TriggerKind
+) {
+	const otherKind = kind === 'clan_teams' ? 'two_teams' : 'clan_teams';
+	const [other] = await db
+		.select({ name: triggers.name })
+		.from(triggers)
+		.where(
+			and(eq(triggers.serverId, serverId), eq(triggers.kind, otherKind), eq(triggers.enabled, true))
+		)
+		.limit(1);
+	if (other)
+		throw new ApiError(
+			409,
+			`Turn off "${other.name}" before enabling ${TRIGGER_LABELS[kind]}; only one team-moving rule can run on a server.`,
+			'conflict'
+		);
+}
+
 export async function updateTrigger(
 	env: Env,
 	req: Request,
@@ -326,17 +361,26 @@ export async function updateTrigger(
 	// it was off is the row's at the write, not the read above, so a switch-off landing between them
 	// still gets its switch-on.
 	const switchOn =
-		row.kind === 'two_teams' && set.enabled === true
+		isTeamMoveRule(row.kind) && set.enabled === true
 			? sql`CASE WHEN ${triggers.enabled} THEN ${triggers.state} ELSE (${JSON.stringify({ enabledAt: Date.now() })}::text)::jsonb END`
 			: undefined;
 	requireRuleCaps(row.kind, set.config ?? row.config, server, access);
 	if (!Object.keys(set).length) throw new ApiError(400, 'Nothing to update.');
 	set.updatedAt = new Date();
-	const [updated] = await env.db
-		.update(triggers)
-		.set(switchOn ? { ...set, state: switchOn } : set)
-		.where(eq(triggers.id, row.id))
-		.returning();
+	const save = (db: Pick<Env['db'], 'update'>) =>
+		db
+			.update(triggers)
+			.set(switchOn ? { ...set, state: switchOn } : set)
+			.where(eq(triggers.id, row.id))
+			.returning();
+	const [updated] =
+		isTeamMoveRule(row.kind) && set.enabled === true
+			? await env.db.transaction(async (tx) => {
+					await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`triggers:${server.id}`}))`);
+					await requireSingleTeamRule(tx, server.id, row.kind);
+					return save(tx);
+				})
+			: await save(env.db);
 	// Saved again with the same settings (a rename, say), what it queued still holds.
 	const settings = SETTINGS_KEYS[row.kind];
 	if (
@@ -392,6 +436,7 @@ export async function deleteTrigger(
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
+	clan_teams: (c) => clanTeamsSettingsKey(c as ClanTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig)
 };
 
@@ -685,6 +730,15 @@ export async function evaluateTriggers(
 					break;
 				case 'two_teams':
 					await evalTwoTeams(ctx, row, row.config as TwoTeamsConfig, out, read);
+					break;
+				case 'clan_teams':
+					await evalTwoTeams(
+						ctx,
+						row,
+						clanTeamsMoveConfig(row.config as ClanTeamsConfig),
+						out,
+						read
+					);
 					break;
 			}
 		} catch (err) {
@@ -1114,7 +1168,7 @@ async function evalTwoTeams(
 ) {
 	const now = ctx.ts.getTime();
 	// The same fingerprint rides on every move and whisper, for delivery to check against.
-	const config = twoTeamsSettingsKey(cfg);
+	const config = SETTINGS_KEYS[row.kind]!(row.config);
 	// The marker updateTrigger writes when the rule is switched on: it starts over then too.
 	const memoryKey = `${config}:${JSON.stringify(row.state ?? null)}`;
 	let memory = twoTeamsMemory.get(row.id);
@@ -1161,11 +1215,23 @@ async function evalTwoTeams(
 		)
 	);
 	const newMatch = memory.newMatch;
-	const step = twoTeamsStep(cfg, memory.state, ctx.players, open, now, perLook, {
+	const look = {
 		newMatch,
 		seq,
 		staffMoves: noted
-	});
+	};
+	const step =
+		row.kind === 'clan_teams'
+			? clanTeamsStep(
+					row.config as ClanTeamsConfig,
+					memory.state,
+					ctx.players,
+					open,
+					now,
+					perLook,
+					look
+				)
+			: twoTeamsStep(cfg, memory.state, ctx.players, open, now, perLook, look);
 	// The memory moves on only once this look's moves and whispers are queued: a look whose write
 	// fails is decided again at the next one, rather than remembered as asked.
 	const kept = memory;
@@ -1188,7 +1254,8 @@ async function evalTwoTeams(
 				mem: kept.id,
 				seq,
 				at: now,
-				on: (row.state as { enabledAt?: number } | null)?.enabledAt ?? null
+				on: (row.state as { enabledAt?: number } | null)?.enabledAt ?? null,
+				...(row.kind === 'clan_teams' ? { clan: clanTag(m.name) } : {})
 			},
 			target: m.steamId,
 			okMessage: `Moved ${moved}.`,
@@ -1709,7 +1776,7 @@ export async function dryRun(
 		);
 		return result;
 	}
-	if (kind === 'two_teams') {
+	if (isTeamMoveRule(kind)) {
 		result.notes.push(
 			'Faction moves are not kept in the session history, so there is nothing to replay. Switch on Watch only to see live what the rule would move, under Actions, without moving anyone.'
 		);

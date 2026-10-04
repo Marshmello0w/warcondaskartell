@@ -191,6 +191,12 @@
 			blurb: 'Keep the sides even, and close a faction to play two teams.'
 		},
 		{
+			kind: 'clan_teams',
+			group: 'Players',
+			label: 'Clan teams',
+			blurb: 'Keep players with the same clan tag on the first member’s team.'
+		},
+		{
 			kind: 'seed_reward',
 			group: 'Players',
 			label: 'Seeding reward',
@@ -762,6 +768,8 @@
 					exempt: f.exempt.split(/[\s,]+/).filter(Boolean),
 					watchOnly: f.watchOnly
 				};
+			case 'clan_teams':
+				return { watchOnly: f.watchOnly };
 			case 'seed_reward':
 				return {
 					lowAt: Number(f.lowAt),
@@ -951,6 +959,8 @@
 				const far = Number(c.minDistanceM) > 0 ? `from ${c.minDistanceM} m` : 'at any distance';
 				return `${weapons} ${far} · ${c.count === 1 ? '1 kill' : `${c.count} kills in a match`} · ${act}`;
 			}
+			case 'clan_teams':
+				return `${c.watchOnly ? 'watch only · ' : ''}same clan tag, same team · first member’s side`;
 			case 'two_teams': {
 				const names = Object.entries((c.names as Record<string, string> | undefined) ?? {}).map(
 					([k, v]) => `${k} as ${v}`
@@ -1757,6 +1767,29 @@
 						The timer starts on the first high-ping sample. It resets when ping drops to the limit
 						or below, is unavailable, the player leaves, or the player list cannot be sampled on
 						time.
+					</p>
+				{:else if f.kind === 'clan_teams'}
+					<p class="note">
+						The first member to pick a team sets their clan’s side. Other members joining or
+						switching to another side are moved there on the next player list, checked at least
+						every 5 seconds while the server is online. Players without a clan tag stay where they
+						are; team sizes and all three factions stay available.
+					</p>
+					<p class="text-[12px] text-mist-600">
+						Tags are 1–12 characters at the start of the name, such as [ichbins],
+						{'{ichbins}'}, (ichbins) or &lt;ichbins&gt;; letter case does not matter. The clan’s
+						side stays while members are playing, and resets when they all leave or a new match
+						starts. A lone member can choose any side. If players are already split when this rule
+						starts, the first tagged player in the list sets the side.
+					</p>
+					<label class="flex items-center gap-2 text-[13px]"
+						><input type="checkbox" bind:checked={f.watchOnly} /> Watch only: list the moves under Actions,
+						move nobody</label
+					>
+					<p class="text-[12px] text-mist-600">
+						A move kills the player so they respawn with their clan. Failed moves retry every 15
+						seconds, up to ten attempts in ten minutes; 30 seconds on the clan’s side resets the
+						attempts. Turn off Team balance before enabling this rule.
 					</p>
 				{:else if f.kind === 'two_teams'}
 					<fieldset class="space-y-2 text-[13px]">

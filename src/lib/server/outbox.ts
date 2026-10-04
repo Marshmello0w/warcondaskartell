@@ -21,6 +21,7 @@ import { settings } from './settings';
 import {
 	recordDelivery,
 	SETTINGS_KEYS,
+	isTeamMoveRule,
 	twoTeamsMoveVerdict,
 	type Intent,
 	type TriggerUpdate
@@ -32,6 +33,7 @@ import { gateway } from './gateway';
 import { deliveries } from './metrics';
 import { NAME_FLAG } from './name-filter';
 import { KILL_RATE_FLAG } from './kill-rate';
+import { clanTag } from './two-teams';
 import { KILL_DISTANCE_FLAG } from './kill-distance';
 import { writeAudit } from './audit';
 import { PANEL_BAN, type PanelBanParams } from './rule-ban';
@@ -295,9 +297,12 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 		return 'Players arrived before the reset.';
 	// A Team balance move for a player already off the side it was decided from: the move before it
 	// landed, or they changed side themselves. Moving (and killing) someone twice is not harmless.
-	if (row.triggerKind === 'two_teams' && row.action === 'changeTeam') {
-		const from = (row.params as { from?: string } | null)?.from;
+	if (isTeamMoveRule(row.triggerKind) && row.action === 'changeTeam') {
+		const params = row.params as { from?: string; clan?: string } | null;
+		const from = params?.from;
 		const p = m.players.find((q) => q.steamId === row.steamId);
+		if (row.triggerKind === 'clan_teams' && p && clanTag(p.name) !== params?.clan)
+			return 'Clan tag changed before the move.';
 		if (from && p && p.faction !== from) return `Already off ${from}.`;
 		const verdict = twoTeamsMoveVerdict(row);
 		if (verdict !== 'send' && verdict !== 'wait') return verdict;
@@ -317,7 +322,7 @@ function mustWait(row: OutboxRow, m: ReturnType<typeof memoryOf>): boolean {
 			!m.players.some((p) => p.steamId === row.steamId) &&
 			m.presence.open.has(row.steamId)) ||
 		// a Team balance move whose deciding look is not written yet here
-		(row.triggerKind === 'two_teams' &&
+		(isTeamMoveRule(row.triggerKind) &&
 			row.action === 'changeTeam' &&
 			twoTeamsMoveVerdict(row) === 'wait')
 	);
@@ -330,7 +335,7 @@ function mustWait(row: OutboxRow, m: ReturnType<typeof memoryOf>): boolean {
  */
 const movesSent = new Map<string, number>();
 const moveOf = (row: OutboxRow) =>
-	row.triggerKind === 'two_teams' && row.action === 'changeTeam' && row.steamId
+	isTeamMoveRule(row.triggerKind) && row.action === 'changeTeam' && row.steamId
 		? `${row.serverId}:${row.steamId}`
 		: null;
 
@@ -378,7 +383,7 @@ function holdsFor(
 	if (key && params?.rule !== key(rule.config)) return false;
 	// A Team balance move carries the switch-on it was decided under: switched off and on again
 	// since, the rule has started over and the move is not its decision.
-	if (row.triggerKind === 'two_teams' && params?.on !== undefined && 'state' in rule)
+	if (isTeamMoveRule(row.triggerKind) && params?.on !== undefined && 'state' in rule)
 		return params.on === ((rule.state as { enabledAt?: number } | null)?.enabledAt ?? null);
 	return true;
 }

@@ -550,6 +550,24 @@ choose a side after joining, so a whisper on join can land while they are still 
 first poll after a restart or an outage never fires join rules, since everyone present looks like a
 joiner then.
 
+**Clan teams** is a separate rule for grouping clans without team balance or a closed faction.
+The first observed faction pick by a player with a tag such as `[ichbins]` establishes that clan's
+team. Further members choosing another team are moved to it, even when it is the larger team;
+players without a tag are left alone. Tags use the same 1–12 character bracketed prefix as Team
+balance, ignoring case. A lone member can choose freely; with multiple members the clan's side
+stays until everyone leaves or a new match starts. If a clan is already split when the rule
+starts, the first tagged player on the roster chooses the side. Worker restarts and reseeding
+after an outage forget this assignment.
+
+The player list refreshes at least every five seconds on an online server, even without a browser
+open, subject to the game's rate limit. Moves use the usual move-then-kill and are paced in small
+batches, retrying after 15 seconds, with ten attempts in a rolling ten-minute window and a reset
+after 30 seconds observed on the clan's side. Watch only records planned moves under Actions
+without sending them. Creating, enabling or dry-running the rule needs _Automation_ and _Move_.
+One Clan teams rule per server; Clan teams and Team balance cannot be enabled together because
+they could undo each other's moves. The API kind is `clan_teams`, with
+`config: { "watchOnly": false }`. No database migration is needed for this kind.
+
 #### Placeholders
 
 Every message and kick reason a rule sends can carry placeholders, filled as it goes out, in any

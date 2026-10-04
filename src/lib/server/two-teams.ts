@@ -184,7 +184,7 @@ export const emptyTwoTeamsState = (): TwoTeamsState => ({
 });
 
 /** Why a player is moved: off the closed faction, placed on a side, or put back after a switch. */
-export type TwoTeamsReason = 'closed' | 'placed' | 'back';
+export type TwoTeamsReason = 'closed' | 'placed' | 'back' | 'clan';
 
 export interface TwoTeamsStep {
 	state: TwoTeamsState;

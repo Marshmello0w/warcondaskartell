@@ -487,6 +487,7 @@ export type TriggerKind =
 	| 'name_filter'
 	| 'kill_rate'
 	| 'two_teams'
+	| 'clan_teams'
 	| 'kill_distance';
 
 export interface TriggerView {
