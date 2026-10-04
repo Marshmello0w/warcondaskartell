@@ -7,6 +7,7 @@ import { validateNameFilter, type NameFilterConfig } from './name-filter';
 import { validateKillRate, type KillRateConfig } from './kill-rate';
 import { validateKillDistance, type KillDistanceConfig } from './kill-distance';
 import { validateTwoTeams, type TwoTeamsConfig } from './two-teams';
+import { validateClanTeams, type ClanTeamsConfig } from './clan-teams';
 import { causeTags } from './cause-tags';
 import { RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
 import { MAX_CHAT } from '$lib/chat';
@@ -30,6 +31,7 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'name_filter',
 	'kill_rate',
 	'two_teams',
+	'clan_teams',
 	'kill_distance'
 ];
 export const TRIGGER_LABELS: Record<TriggerKind, string> = {
@@ -46,6 +48,7 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	name_filter: 'Name filter',
 	kill_rate: 'Kill rate watch',
 	two_teams: 'Team balance',
+	clan_teams: 'Clan teams',
 	kill_distance: 'Kill distance watch'
 };
 
@@ -202,6 +205,7 @@ export type TriggerConfig =
 	| NameFilterConfig
 	| KillRateConfig
 	| TwoTeamsConfig
+	| ClanTeamsConfig
 	| KillDistanceConfig;
 
 /** A kick reason: not chat, so not held to the game's chat cap. */
@@ -389,6 +393,8 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateKillRate(c);
 		case 'two_teams':
 			return validateTwoTeams(c);
+		case 'clan_teams':
+			return validateClanTeams(c);
 		case 'kill_distance':
 			return validateKillDistance(c);
 	}

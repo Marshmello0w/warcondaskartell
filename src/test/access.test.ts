@@ -528,6 +528,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['kill_distance', { causes: [DEFIB], action: 'ban' }, 'bans.manage'],
 				['kill_distance', { causes: [DEFIB], action: 'ban', banScope: 'org' }, 'lists.ban'],
 				['two_teams', { closedFaction: 'Lonestar' }, 'players.move'],
+				['clan_teams', {}, 'players.move'],
 				['seed_reward', { minutes: 60, scope: 'server' }, 'slots.manage'],
 				['seed_reward', { minutes: 60, scope: 'org' }, 'lists.reserve']
 			];
@@ -989,6 +990,43 @@ describe.skipIf(!hasTestDb)('access', () => {
 				});
 			const got = await Promise.all([save('Lonestar'), save('Valkyra')]);
 			expect(got.map((r) => r.status).sort()).toEqual([201, 409]);
+		});
+
+		test('Clan teams and Team balance cannot be enabled together, even concurrently', async () => {
+			const w = await seedWorld(env);
+			const params = { id: w.server.id };
+			const make = (kind: string, config: Record<string, unknown>) =>
+				api(w, 'owner', 'POST api/servers/[id]/triggers', { params, body: { kind, config } });
+			const clan = await make('clan_teams', {});
+			const balance = await make('two_teams', { closedFaction: 'Lonestar' });
+			expect(clan.status).toBe(201);
+			expect(balance.status).toBe(201);
+			const clanId = (clan.body as { trigger: { id: string } }).trigger.id;
+			const balanceId = (balance.body as { trigger: { id: string } }).trigger.id;
+			const enable = (triggerId: string, enabled = true) =>
+				api(w, 'owner', 'PATCH api/servers/[id]/triggers/[triggerId]', {
+					params: { ...params, triggerId },
+					body: { enabled }
+				});
+			const result = await Promise.all([enable(clanId), enable(balanceId)]);
+			expect(result.map((r) => r.status).sort()).toEqual([200, 409]);
+			await enable(clanId, false);
+			await enable(balanceId, false);
+			expect((await enable(clanId)).status).toBe(200);
+			expect((await enable(balanceId)).status).toBe(409);
+			expect((await enable(clanId, false)).status).toBe(200);
+			expect((await enable(balanceId)).status).toBe(200);
+			await api(w, 'owner', 'DELETE api/servers/[id]/triggers/[triggerId]', {
+				params: { ...params, triggerId: clanId }
+			});
+			expect(
+				(
+					await api(w, 'owner', 'POST api/servers/[id]/triggers', {
+						params,
+						body: { kind: 'clan_teams', config: {}, enabled: true }
+					})
+				).status
+			).toBe(409);
 		});
 
 		test('a Team balance rule that whispers needs Chat as well', async () => {

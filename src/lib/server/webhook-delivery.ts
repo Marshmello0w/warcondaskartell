@@ -148,6 +148,7 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.name_filter': 'Trigger · name filter',
 	'trigger.kill_rate': 'Trigger · kill rate watch',
 	'trigger.two_teams': 'Trigger · two-team mode',
+	'trigger.clan_teams': 'Trigger · clan teams',
 	'trigger.kill_distance': 'Trigger · kill distance watch',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
@@ -465,7 +466,7 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
  * start. The audit trail keeps each one; Discord hears only of those that fail, so they neither flood a staff channel nor push another
  * rule's card out of the webhook's queue.
  */
-const QUIET_WHEN_OK = new Set(['trigger.two_teams']);
+const QUIET_WHEN_OK = new Set(['trigger.two_teams', 'trigger.clan_teams']);
 
 /** Fans one audit row out to the org's webhooks that want its event class. Never throws. */
 export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {

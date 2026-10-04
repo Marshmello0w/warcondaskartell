@@ -18,6 +18,7 @@ import {
 } from '$lib/server/triggers';
 import type { TriggerRow } from '$lib/server/db/schema';
 import { twoTeamsSettingsKey, validateTwoTeams } from '$lib/server/two-teams';
+import { validateClanTeams } from '$lib/server/clan-teams';
 import { GameError, WardogsClient } from '$lib/server/rcon';
 import type { Player } from '$lib/types';
 import { subscribe } from '$lib/server/events';
@@ -132,6 +133,98 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 			await Bun.sleep(25);
 		}
 	};
+
+	test('Clan teams uses move-then-kill, cancels renamed players and never sends watch-only rows', async () => {
+		await stopDelivery();
+		forgetRuleMemory();
+		const config = validateClanTeams({});
+		const [rule] = await env.db
+			.insert(triggers)
+			.values({
+				id: `clan-${w.server.id}`,
+				serverId: w.server.id,
+				orgId: w.org.id,
+				kind: 'clan_teams',
+				name: 'Clan teams',
+				enabled: true,
+				config
+			})
+			.returning();
+		const A = '76561198000000970',
+			B = '76561198000000971',
+			C = '76561198000000972';
+		const clanPlayer = (id: string, side: string): Player => ({
+			...on(id, side),
+			name: `[ichbins] ${id}`
+		});
+		const m = memoryOf(w.server.id)!;
+		m.players = [clanPlayer(A, 'Manticore'), clanPlayer(B, 'Valkyra'), clanPlayer(C, 'Valkyra')];
+		m.playersAt = Date.now();
+		const ev = await evaluateTriggers(
+			env,
+			{
+				server: { id: w.server.id, name: 'Server' },
+				status: {
+					scores: ['Manticore', 'Valkyra', 'Lonestar'].map((name) => ({
+						name,
+						colorHex: '',
+						score: 0
+					}))
+				},
+				players: m.players,
+				playersObserved: true,
+				playersIntervalMs: 5000,
+				ts: new Date()
+			} as TickContext,
+			[rule]
+		);
+		await enqueueIntents(env.db, w.server.id, ev.intents);
+		for (const f of ev.afterCommit ?? []) f();
+		// The rename is already on the roster, but the next rule evaluation has not committed yet.
+		m.players[2] = { ...m.players[2], name: 'Solo' };
+		const ids = (
+			await env.db.select({ id: outbox.id }).from(outbox).where(eq(outbox.triggerId, rule.id))
+		).map((r) => r.id);
+		const before = requests.length;
+		startDelivery(env);
+		await until(async () => (await rowsOf(ids)).every((r) => r.doneAt !== null));
+		expect(requests.slice(before)).toEqual([
+			`PATCH /v1/players/${B}`,
+			`POST /v1/players/${B}/kill`
+		]);
+		expect((await rowsOf(ids)).map((r) => r.state)).toEqual(['delivered', 'skipped']);
+		expect((await rowsOf(ids))[1].outcome).toBe('Clan tag changed before the move.');
+		await stopDelivery();
+		await env.db
+			.update(triggers)
+			.set({ config: validateClanTeams({ watchOnly: true }) })
+			.where(eq(triggers.id, rule.id));
+		forgetRuleMemory();
+		const watch = await evaluateTriggers(
+			env,
+			{
+				server: { id: w.server.id },
+				status: { scores: ['Manticore', 'Valkyra', 'Lonestar'].map((name) => ({ name })) },
+				players: m.players,
+				playersObserved: true,
+				playersIntervalMs: 5000,
+				ts: new Date()
+			} as TickContext,
+			[{ ...rule, config: validateClanTeams({ watchOnly: true }) }]
+		);
+		await enqueueIntents(env.db, w.server.id, watch.intents);
+		const [watched] = await env.db
+			.select()
+			.from(outbox)
+			.where(eq(outbox.dedupeKey, watch.intents[0].dedupeKey));
+		expect(watched.state).toBe('skipped');
+		expect(watched.outcome).toContain('Watch only: would move');
+		await env.db.delete(triggers).where(eq(triggers.id, rule.id));
+		invalidateTriggers(w.server.id);
+		forgetRuleMemory();
+		requests.length = 0;
+		times.length = 0;
+	}, 30_000);
 
 	test('a second move waits for a newer player list, then goes only if the first did not land', async () => {
 		const m = memoryOf(w.server.id)!;

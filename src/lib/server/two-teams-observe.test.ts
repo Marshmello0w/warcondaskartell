@@ -5,6 +5,21 @@ const memory = () => memoryFor({ id: 'two-team-cadence' } as never, {} as never)
 afterEach(() => forgetMemory('two-team-cadence'));
 
 describe('Two-team roster cadence', () => {
+	test('clan-only grouping sees picks within five seconds without an open dashboard', () => {
+		const m = memory();
+		m.clanTeamsOn = true;
+		planNext(m, 1000, { players: true, status: true });
+		expect(m.playersIntervalMs).toBe(5000);
+		expect(m.playersDueAt).toBe(6000);
+		expect(m.statusDueAt).toBe(31_000);
+		m.holdUntil = 90_000;
+		planNext(m, 6000, { players: true, status: false });
+		expect(m.playersDueAt).toBe(90_000);
+		m.holdUntil = 0;
+		m.failures = OFFLINE_AFTER_FAILURES;
+		planNext(m, 100_000, { players: true, status: true });
+		expect(m.playersIntervalMs).toBe(30_000);
+	});
 	test('keeps reading an idle server every 15 seconds without changing its status cadence', () => {
 		const m = memory();
 		m.twoTeamsOn = true;
