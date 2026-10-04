@@ -25,6 +25,30 @@ function rethrow(e: RelayError): never {
 	throw new ApiError(502, `Worker: ${e.message}`, 'worker_error');
 }
 
+/**
+ * Ids in one GET of the worker's live views (300 ids are about 11.7 KB of URL, which the worker
+ * takes); past this they go in a POST body, which a worker from before the POST form ignores.
+ */
+export const LIVE_GET_IDS = 300;
+
+/**
+ * The worker's live views of these servers. A long list goes in a body: in a URL a few hundred
+ * ids pass what the worker accepts. A short one stays a GET, which a worker from before the POST
+ * form also answers (a web rolled out first sees an older worker for a minute).
+ */
+export async function remoteLive(env: Env, ids: string[]): Promise<Map<string, LiveView>> {
+	const r =
+		ids.length > LIVE_GET_IDS
+			? await call<Record<string, LiveView>>(env, '/live', { ids })
+			: await call<Record<string, LiveView>>(
+					env,
+					`/live?ids=${encodeURIComponent(ids.join(','))}`,
+					undefined,
+					'GET'
+				);
+	return new Map(Object.entries(r));
+}
+
 export async function call<T>(
 	env: Env,
 	path: string,
@@ -129,15 +153,7 @@ export function connectRemoteGateway(env: Env): Gateway {
 		run(env, server, action, params, priority?: Priority) {
 			return call<unknown>(env, '/run', { serverId: server.id, action, params, priority });
 		},
-		async live(env, ids) {
-			const r = await call<Record<string, LiveView>>(
-				env,
-				`/live?ids=${encodeURIComponent(ids.join(','))}`,
-				undefined,
-				'GET'
-			);
-			return new Map(Object.entries(r));
-		},
+		live: remoteLive,
 		interest(ids) {
 			void call(env, '/interest', { ids }).catch(() => {});
 		},

@@ -37,6 +37,9 @@ export function liveView(m: ServerMemory): LiveView {
 	};
 }
 
+/** A view without its player list, for pages that list many servers and show none of their players. */
+export const slimView = (v: LiveView): LiveView => ({ ...v, players: [] });
+
 export function liveViewFromRow(r: ServerLiveRow): LiveView {
 	return {
 		serverId: r.serverId,
