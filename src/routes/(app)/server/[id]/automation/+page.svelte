@@ -1903,10 +1903,16 @@
 					>
 					<p class="note">
 						Moves go out a few at a time as the player list refreshes; each kills the player so they
-						respawn on the new side. A player asked to move three times in ten minutes is left where
-						they are until the ten minutes pass.{f.balance
-							? ''
-							: ' Players are never moved between the open sides.'} One rule per server.
+						respawn on the new side.
+						{#if f.balance}
+							A player who switches onto the bigger side is put back every time. A player asked to
+							move three times in ten minutes for any other reason, or put back three times without
+							it taking, is left where they are until the ten minutes pass.
+						{:else}
+							A player asked to move three times in ten minutes is left where they are until the ten
+							minutes pass. Players are never moved between the open sides.
+						{/if}
+						One rule per server.
 					</p>
 				{:else if f.kind === 'team_kill'}
 					<fieldset class="space-y-2">

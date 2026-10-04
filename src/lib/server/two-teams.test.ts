@@ -270,6 +270,37 @@ describe('twoTeamsStep balancing', () => {
 		expect(helper.state.sides.get('v0')?.side).toBe(M);
 	});
 
+	test('a player who keeps switching onto the bigger side is put back every time', () => {
+		const players = [...side('v', 7, V), ...side('m', 5, M)];
+		const onV = players.map((x) => (x.steamId === 'm0' ? { ...x, faction: V } : x));
+		let state = seeded(players);
+		for (let i = 0; i < 2 * TWO_TEAMS_MAX_ASKS; i++) {
+			// onto Valkyra again, eight against four
+			const r = bal(state, onV, (2 * i + 1) * 2000);
+			expect(r.moves.map((m) => [m.steamId, m.to, m.why])).toEqual([['m0', M, 'back']]);
+			expect(r.stopped).toEqual([]);
+			// and the put-back lands
+			state = bal(r.state, players, (2 * i + 2) * 2000).state;
+		}
+	});
+
+	test('a put-back the game does not carry out is asked three times in ten minutes at most', () => {
+		const players = [...side('v', 7, V), ...side('m', 5, M)];
+		const onV = players.map((x) => (x.steamId === 'm0' ? { ...x, faction: V } : x));
+		let state = seeded(players);
+		const whys: string[] = [];
+		const stopped: string[] = [];
+		// still on Valkyra at every look, each a retry's wait after the one before
+		for (let i = 0; i < 2 * TWO_TEAMS_MAX_ASKS; i++) {
+			const r = bal(state, onV, 2000 + i * (TWO_TEAMS_RETRY_MS + 1000));
+			state = r.state;
+			whys.push(...r.moves.map((m) => m.why));
+			stopped.push(...r.stopped.map((s) => s.steamId));
+		}
+		expect(whys).toEqual(Array(TWO_TEAMS_MAX_ASKS).fill('back'));
+		expect(stopped).toEqual(['m0']);
+	});
+
 	test('a player who leaves and rejoins on the bigger side is still put back, until forgotten', () => {
 		const players = [...side('v', 7, V), ...side('m', 5, M)];
 		const others = players.filter((x) => x.steamId !== 'm0');
