@@ -274,7 +274,7 @@ async function boardSlice(
 		       r.vehicle_kills AS "vehicleKills", r.kill_streak AS "killStreak", r.death_streak AS "deathStreak",
 		       r.matches, r.wins, r.losses, r.draws, r.total,
 		       (SELECT name FROM player_sessions ps WHERE ps.steam_id = r.steam_id AND ps.server_id IN ${ids}
-		         ORDER BY ps.joined_at DESC LIMIT 1) AS name
+		         ORDER BY ps.joined_at DESC, ps.id DESC LIMIT 1) AS name
 		  FROM page r`)) as BaseRow[];
 }
 
@@ -410,7 +410,7 @@ export async function lastNameOf(env: Env, ids: string[], steamId: string): Prom
 	if (!ids.length) return null;
 	const [row] = await env.db.execute<{ name: string }>(sql`
 		SELECT name FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids}
-		 ORDER BY joined_at DESC LIMIT 1`);
+		 ORDER BY joined_at DESC, id DESC LIMIT 1`);
 	return row?.name ?? null;
 }
 

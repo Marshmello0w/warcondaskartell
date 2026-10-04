@@ -110,7 +110,7 @@ export async function oracleBoard(
 		       r.kill_streak::text AS "killStreak", r.death_streak::text AS "deathStreak", r.matches::text,
 		       r.wins::text, r.losses::text, r.draws::text, r.total::text,
 		       (SELECT name FROM player_sessions ps WHERE ps.steam_id = r.steam_id AND ps.server_id IN ${ids}
-		         ORDER BY ps.joined_at DESC LIMIT 1) AS name
+		         ORDER BY ps.joined_at DESC, ps.id DESC LIMIT 1) AS name
 		  FROM page r`)) as Record<string, unknown>[];
 }
 
