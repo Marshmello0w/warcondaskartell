@@ -729,7 +729,9 @@ player played; a match with no winner and nobody scoring, or one abandoned by a 
 result. Playtime and seed time come from player sessions; kills per hour leaves seed time out;
 cash is summed over sessions, each banked across its matches like kills. Names link to the dossier.
 A page of a board is read at most once a minute for the same servers and settings, so a match
-that just ended can take up to a minute to appear (a stats purge shows at once).
+that just ended can take up to a minute to appear (a stats purge shows at once). All time is read
+from each player's totals per server, which the database keeps as sessions close and matches end,
+plus the sessions still open; 7, 30 and 90 days sum the match rows and sessions in the range.
 
 **Export CSV** on the tab downloads the board as it is set (scope, range, sort, playtime floor),
 from the top and every page of it, up to 10,000 players: rank, SteamID, name, playtime and seed
@@ -742,8 +744,8 @@ Each dossier has a **Career** section: rank on the all-time kills board for this
 organisation, the current win or loss streak, matches with wins, losses and draws, K/D, kills per
 minute, headshot rate and best streak, a table per map and per faction (matches, wins, K/D), and
 the last ten matches with map, faction, result, time on, kills, deaths and the change in cash,
-each opening its match page. Everything is read at page load from the rows the worker writes;
-nothing is precomputed.
+each opening its match page. Everything is read at page load; the ranks from each player's totals
+per server, the matches from the player's own rows.
 
 Every server page has a **Matches** tab: the match history, newest first, with the map, when it
 started, how long it ran, the winner with the final scores (or "abandoned" for a match a restart
@@ -1519,6 +1521,15 @@ settings) · `serverLog` (Audit trail) · `raw` (Raw RCON).
 - The risk score and the kick-on-connect trigger see only what this page describes. They cannot
   see aim, position, input or IP addresses; anything claiming to detect aimbots from the RCON API
   is guessing.
+- Each player's totals per server (the all-time boards, career ranks, the placeholders' stats and
+  the risk score's record of matches) are kept by triggers in the database, in the same
+  transaction as whatever closes a session, ends a match or changes either afterwards, so a hand
+  repair of a session, a match or a match row keeps them right by itself. Start such a repair with
+  `SELECT player_totals_lock('<server id>');` and keep the default READ COMMITTED isolation (the
+  triggers refuse any other). A bulk load (a backfill of history; a `TRUNCATE` of
+  `player_sessions`, `matches` or `match_players`, which fires no trigger) runs in one transaction
+  that disables the `player_totals_*` triggers on those tables, loads, runs
+  `SELECT player_totals_rebuild();` and enables them again: writers wait for it, readers do not.
 - Audit rows are never deleted by the panel. Prune them with SQL if you need to. Deleting an
   account pseudonymises its rows rather than removing them (see
   [Accounts and personal data](#accounts-and-personal-data)).

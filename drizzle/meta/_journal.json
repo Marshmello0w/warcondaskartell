@@ -267,6 +267,13 @@
       "when": 1791069654398,
       "tag": "0037_read_and_write_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791109561028,
+      "tag": "0038_player_totals",
+      "breakpoints": true
     }
   ]
 }
