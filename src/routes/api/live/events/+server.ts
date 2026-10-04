@@ -3,10 +3,16 @@
 // them to the fastest observation tier. Streams live a few minutes at most: the browser
 // reconnects on its own, and every reconnection is authenticated and access-checked afresh, so a
 // revoked user or grant loses the stream promptly.
+//
+// ?ids=a,b, or ?org=<id> for that organisation's servers (default: every server the caller may
+// see). A page listing a whole fleet passes ?passive=1, so its servers keep the cadence their
+// players give them instead of all becoming watched, and ?slim=1: observations without the player
+// lists, and nothing else.
 import { getEnv } from '$lib/server/env';
 import { ApiError, apiError } from '$lib/server/http';
 import { accessibleServers, requireUser } from '$lib/server/access';
 import { gateway } from '$lib/server/gateway';
+import { slimView } from '$lib/server/live';
 import { isShuttingDown, onShutdown } from '$lib/server/shutdown';
 
 const INTEREST_MS = 5000;
@@ -21,11 +27,14 @@ export const GET = async (event) => {
 	// the stream itself stays outside route(), since it is a long-lived response.
 	let ids: string[];
 	let automation: Set<string>;
+	const params = event.url.searchParams;
+	const passive = params.get('passive') === '1';
+	const slim = params.get('slim') === '1';
 	try {
 		const user = requireUser(event.locals);
-		const servers = await accessibleServers(env, user);
+		const servers = await accessibleServers(env, user, params.get('org') || null);
 		const mine = new Set(servers.map((s) => s.id));
-		const asked = (event.url.searchParams.get('ids') || '').split(',').filter(Boolean);
+		const asked = (params.get('ids') || '').split(',').filter(Boolean);
 		ids = (asked.length ? asked : [...mine]).filter((id) => mine.has(id));
 		// What a rule did is for those who may read the outbox (GET .../outbox), not every viewer.
 		automation = new Set(
@@ -69,18 +78,20 @@ export const GET = async (event) => {
 					cleanup();
 				}
 			};
-			gateway().interest(ids);
+			if (!passive) gateway().interest(ids);
 			const initial = await gateway().live(env, ids);
 			if (closed) return; // cancelled while the first read was pending
-			for (const v of initial.values()) send('live', v);
+			for (const v of initial.values()) send('live', slim ? slimView(v) : v);
 			if (closed) return;
 			unsubscribe = gateway().subscribe((e) => {
-				if (e.type === 'live' && wanted.has(e.live.serverId)) send('live', e.live);
+				if (e.type === 'live' && wanted.has(e.live.serverId))
+					send('live', slim ? slimView(e.live) : e.live);
+				else if (slim) return;
 				else if (e.type === 'outbox' && wanted.has(e.serverId) && automation.has(e.serverId))
 					send('outbox', e);
 				else if (e.type === 'kills' && wanted.has(e.serverId)) send('kills', e);
 			});
-			timers.push(setInterval(() => gateway().interest(ids), INTEREST_MS));
+			if (!passive) timers.push(setInterval(() => gateway().interest(ids), INTEREST_MS));
 			timers.push(
 				setInterval(() => {
 					if (closed) return;

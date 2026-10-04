@@ -24,18 +24,39 @@ async function readLive(query: string): Promise<LiveView[]> {
 	return Object.values(d.live);
 }
 
+/**
+ * How a page that lists a whole fleet asks for it. `org` names the servers instead of listing
+ * them (null: every server the user may see), since hundreds of ids do not fit in a URL; the
+ * stream is passive, so the servers keep the cadence their players give them rather than all
+ * becoming watched, and slim: no player lists, no kills or rule deliveries.
+ */
+export interface FleetWatch {
+	org: string | null;
+	/** keep the player lists (a page that shows who is on) */
+	players?: boolean;
+}
+
 export function watchLive(
 	ids: string[],
 	onEach: (v: LiveView) => void,
 	onOutbox?: (n: OutboxNotice) => void,
-	onKills?: (n: KillsNotice) => void
+	onKills?: (n: KillsNotice) => void,
+	fleet?: FleetWatch
 ): () => void {
 	if (!ids.length) return () => {};
 	const onLive = (v: LiveView) => {
 		noteLive(v);
 		onEach(v);
 	};
-	const query = `ids=${encodeURIComponent(ids.join(','))}`;
+	const query = fleet
+		? [
+				fleet.org ? `org=${encodeURIComponent(fleet.org)}` : '',
+				'passive=1',
+				fleet.players ? '' : 'slim=1'
+			]
+				.filter(Boolean)
+				.join('&')
+		: `ids=${encodeURIComponent(ids.join(','))}`;
 	let source: EventSource | null = null;
 	let stopped = false;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;

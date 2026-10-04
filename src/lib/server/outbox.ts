@@ -921,11 +921,14 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 // ---- reads --------------------------------------------------------------------------------------
 
 export async function recentOutbox(env: Env, serverId: string, limit = 30): Promise<OutboxView[]> {
+	// Newest first in the order outbox_server_idx keeps (created_at DESC NULLS LAST, as Drizzle
+	// writes it): by id the read walked the whole outbox, kept for good, back to the server's last
+	// row, which on a quiet server is most of the table.
 	const rows = await env.db
 		.select()
 		.from(outbox)
 		.where(eq(outbox.serverId, serverId))
-		.orderBy(desc(outbox.id))
+		.orderBy(sql`${outbox.createdAt} desc nulls last`, desc(outbox.id))
 		.limit(limit);
 	return rows.map((r) => ({
 		id: r.id,

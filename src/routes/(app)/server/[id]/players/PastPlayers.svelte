@@ -1,6 +1,7 @@
 <script lang="ts">
 	// Everyone who has played on this server, from its own sessions: the Players tab's other view.
 	// The server does the searching and the ordering; this holds the filters and the page of rows.
+	import { untrack } from 'svelte';
 	import { api, qs, errorMessage } from '$lib/api';
 	import { fmtAgo, fmtDuration, fmtNum, fmtTime } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
@@ -64,9 +65,11 @@
 		clearTimeout(timer);
 		timer = setTimeout(() => void load(), 300);
 	};
+	// Only a change of server reloads here: load() reads the filters, and tracking them would send
+	// a second request beside each filter's own and cancel the search box's pause.
 	$effect(() => {
 		void server.id;
-		void load();
+		untrack(() => void load());
 		return () => clearTimeout(timer);
 	});
 

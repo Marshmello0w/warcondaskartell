@@ -390,7 +390,11 @@ export const auditLog = pgTable(
 		index('audit_server_idx').on(t.serverId, t.id),
 		index('audit_org_idx').on(t.orgId, t.id),
 		index('audit_actor_idx').on(t.actorId, t.id),
-		index('audit_action_idx').on(t.category, t.action)
+		index('audit_action_idx').on(t.category, t.action),
+		/** a player's history on the dossier (target is their SteamID); rows without a target stay out */
+		index('audit_target_idx')
+			.on(t.target, t.id)
+			.where(sql`${t.target} <> ''`)
 	]
 );
 
@@ -450,9 +454,12 @@ export const playerSessions = pgTable(
 		 *  threshold (0 while no seeding rule is on); what a Seeding reward rule adds up */
 		seedSeconds: integer('seed_seconds').notNull().default(0)
 	},
+	// last_seen has no index on purpose: the heartbeat rewrites it for everyone online every 30 s,
+	// and an indexed column would make each of those rewrites a new entry in every index. A read of
+	// "seen since" adds (left_at IS NULL OR left_at >= since), which closing a session makes
+	// equivalent (it sets last_seen = left_at), and the open index serves that (migration 0037).
 	(t) => [
 		index('player_sessions_open_idx').on(t.serverId, t.leftAt),
-		index('player_sessions_seen_idx').on(t.serverId, t.lastSeen),
 		index('player_sessions_steam_idx').on(t.steamId, t.joinedAt)
 	]
 );
@@ -474,7 +481,13 @@ export const matches = pgTable(
 		finalScores: jsonb('final_scores'),
 		winner: text('winner')
 	},
-	(t) => [index('matches_server_idx').on(t.serverId, t.startedAt)]
+	(t) => [
+		index('matches_server_idx').on(t.serverId, t.startedAt),
+		/** the match in progress, which every status look and kill batch reads: one entry per server */
+		index('matches_open_idx')
+			.on(t.serverId, t.id)
+			.where(sql`${t.endedAt} is null`)
+	]
 );
 
 /**
@@ -879,7 +892,11 @@ export const listEntries = pgTable(
 			.on(t.listId, t.steamId)
 			.where(sql`${t.removedAt} is null`),
 		index('list_entries_list_idx').on(t.listId, t.removedAt),
-		index('list_entries_steam_idx').on(t.steamId)
+		index('list_entries_steam_idx').on(t.steamId),
+		/** bans with an end date still in force: the worker looks for lapsed ones every few seconds */
+		index('list_entries_expiry_idx')
+			.on(t.expiresAt)
+			.where(sql`${t.removedAt} is null and ${t.expiresAt} is not null`)
 	]
 );
 
@@ -1020,7 +1037,10 @@ export const outbox = pgTable(
 	},
 	(t) => [
 		uniqueIndex('outbox_dedupe_idx').on(t.dedupeKey),
-		index('outbox_pending_idx').on(t.state, t.notBefore),
+		/** the rows still to deliver; finished rows, kept for good, stay out of it */
+		index('outbox_pending_idx')
+			.on(t.state, t.notBefore)
+			.where(sql`${t.state} in ('pending', 'sending')`),
 		index('outbox_server_idx').on(t.serverId, t.createdAt.desc())
 	]
 );

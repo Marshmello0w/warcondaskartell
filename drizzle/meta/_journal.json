@@ -260,6 +260,13 @@
       "when": 1790877877865,
       "tag": "0036_player_action_capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1791069654398,
+      "tag": "0037_read_and_write_indexes",
+      "breakpoints": true
     }
   ]
 }

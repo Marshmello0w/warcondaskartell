@@ -58,7 +58,8 @@ export function startWorker(env: Env, label = 'worker'): ReturnType<typeof Bun.s
 	return server;
 }
 
-async function relay(env: Env, path: string, url: URL, req: Request): Promise<Response> {
+/** One relay call, after the bearer check in startWorker (exported for tests). */
+export async function relay(env: Env, path: string, url: URL, req: Request): Promise<Response> {
 	const body =
 		req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
 	const serverOf = async (id: unknown) => {
@@ -83,7 +84,10 @@ async function relay(env: Env, path: string, url: URL, req: Request): Promise<Re
 			);
 		}
 		case '/live': {
-			const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean);
+			// GET ?ids=a,b, or POST { ids } for a list too long for a URL (a fleet of hundreds).
+			const ids = Array.isArray(body.ids)
+				? body.ids.map(String)
+				: (url.searchParams.get('ids') || '').split(',').filter(Boolean);
 			return ok(Object.fromEntries(await localGateway.live(env, ids)));
 		}
 		case '/interest':

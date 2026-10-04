@@ -72,6 +72,7 @@ const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sq
 		       SUM(seed_seconds) / 60.0 AS seed_minutes, MAX(last_seen) AS last_seen,
 		       SUM(cash) AS cash
 		  FROM player_sessions WHERE server_id IN ${ids} AND last_seen >= ${from}
+		   AND (left_at IS NULL OR left_at >= ${from})
 		   ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}
 		 GROUP BY steam_id),
 	${lines(ids, from, steamIds)},
@@ -235,7 +236,7 @@ async function boardSlice(
 		       r.vehicle_kills AS "vehicleKills", r.kill_streak AS "killStreak", r.death_streak AS "deathStreak",
 		       r.matches, r.wins, r.losses, r.draws, r.total,
 		       (SELECT name FROM player_sessions ps WHERE ps.steam_id = r.steam_id AND ps.server_id IN ${ids}
-		         ORDER BY ps.last_seen DESC LIMIT 1) AS name
+		         ORDER BY ps.joined_at DESC LIMIT 1) AS name
 		  FROM page r`)) as BaseRow[];
 }
 
@@ -330,7 +331,7 @@ export async function lastNameOf(env: Env, ids: string[], steamId: string): Prom
 	if (!ids.length) return null;
 	const [row] = await env.db.execute<{ name: string }>(sql`
 		SELECT name FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids}
-		 ORDER BY last_seen DESC LIMIT 1`);
+		 ORDER BY joined_at DESC LIMIT 1`);
 	return row?.name ?? null;
 }
 

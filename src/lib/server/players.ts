@@ -27,6 +27,7 @@ import type {
 	CombatSummary
 } from '$lib/types';
 import { killView } from './feed';
+import { latestNames } from './sessions';
 
 export { requireSteamId } from './steam';
 
@@ -92,21 +93,8 @@ async function bansOn(env: Env, serverIds: string[]): Promise<BanHit[]> {
 }
 
 /** Last name each SteamID was seen with on these servers. */
-async function lastNames(
-	env: Env,
-	serverIds: string[],
-	steamIds: string[]
-): Promise<Map<string, string>> {
-	const out = new Map<string, string>();
-	if (!serverIds.length || !steamIds.length) return out;
-	const rows = await env.db.execute<{ steamId: string; name: string }>(sql`
-		SELECT DISTINCT ON (steam_id) steam_id AS "steamId", name
-		  FROM player_sessions
-		 WHERE server_id IN ${serverIds} AND steam_id IN ${steamIds}
-		 ORDER BY steam_id, last_seen DESC`);
-	for (const r of rows) out.set(r.steamId, r.name);
-	return out;
-}
+const lastNames = (env: Env, serverIds: string[], steamIds: string[]) =>
+	latestNames(env.db, serverIds, steamIds);
 
 export interface LocalSignals {
 	watched: { reason: string } | null;

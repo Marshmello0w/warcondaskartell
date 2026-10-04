@@ -17,15 +17,14 @@ export const GET = route(async (event) => {
 	if (!/^\d{17}$/.test(steamId)) throw new ApiError(404, 'Not found.', 'not_found');
 	const orgServers = await publicOrgServers(env, ps.org, 'leaderboards');
 	const ids = orgServers.map((s) => s.id);
-	const [career, name] = await Promise.all([
-		loadCareer(env, {
-			serverId: ps.server.id,
-			ids,
-			nameOf: new Map(orgServers.map((s) => [s.id, s.name])),
-			steamId
-		}),
-		lastNameOf(env, ids, steamId)
-	]);
+	// Never seen here: a 404 before the career, which reads the boards, is started.
+	const name = await lastNameOf(env, ids, steamId);
 	if (!name) throw new ApiError(404, 'Not found.', 'not_found');
+	const career = await loadCareer(env, {
+		serverId: ps.server.id,
+		ids,
+		nameOf: new Map(orgServers.map((s) => [s.id, s.name])),
+		steamId
+	});
 	return apiJson({ ok: true, player: { steamId, name }, career }, 200, publicHeaders(30));
 });
