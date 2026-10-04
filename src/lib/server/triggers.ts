@@ -23,7 +23,19 @@
 // run replays the last 24 hours from the samples and sessions tables so a rule can be checked
 // before it touches anyone.
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
+import {
+	and,
+	asc,
+	desc,
+	eq,
+	gte,
+	inArray,
+	isNotNull,
+	isNull,
+	or,
+	sql,
+	type SQL
+} from 'drizzle-orm';
 import type { Env } from './env';
 import { ApiError, forLog, int, newId, str } from './http';
 import { writeAudit } from './audit';
@@ -439,7 +451,8 @@ async function dropQueued(env: Env, triggerId: string, why: string): Promise<voi
 	const dropped = await env.db
 		.update(outbox)
 		.set({ state: 'skipped', outcome: why, doneAt: new Date() })
-		.where(and(eq(outbox.triggerId, triggerId), eq(outbox.state, 'pending')))
+		// 'pending' as text: outbox_pending_idx holds only open rows, which a bound value does not prove
+		.where(and(eq(outbox.triggerId, triggerId), sql`${outbox.state} = 'pending'`))
 		.returning({ id: outbox.id, serverId: outbox.serverId });
 	for (const r of dropped)
 		emit({ type: 'outbox', serverId: r.serverId, id: r.id, state: 'skipped' });
@@ -1530,6 +1543,7 @@ async function evalSeedReward(
 					candidates.map((p) => p.steamId)
 				),
 				isNotNull(playerSessions.leftAt),
+				gte(playerSessions.leftAt, from),
 				gte(playerSessions.lastSeen, from)
 			)
 		)
@@ -1875,6 +1889,7 @@ export async function dryRun(
 			       GREATEST(MIN(s.joined_at), ${from}) AS "onAt"
 			  FROM player_sessions s
 			 WHERE s.server_id = ${server.id} AND s.last_seen >= ${from}
+			   AND (s.left_at IS NULL OR s.left_at >= ${from})
 			 GROUP BY s.steam_id
 			 ORDER BY MAX(s.last_seen) DESC LIMIT ${RISK_REPLAY_MAX}`);
 		const seen = new Map<string, { name: string; joinedAt: Date }>();
@@ -2241,7 +2256,13 @@ export async function dryRun(
 				leftAt: playerSessions.leftAt
 			})
 			.from(playerSessions)
-			.where(and(eq(playerSessions.serverId, server.id), gte(playerSessions.lastSeen, from)))
+			.where(
+				and(
+					eq(playerSessions.serverId, server.id),
+					gte(playerSessions.lastSeen, from),
+					or(isNull(playerSessions.leftAt), gte(playerSessions.leftAt, from))
+				)
+			)
 			.orderBy(asc(playerSessions.joinedAt))
 			.limit(5000);
 		if (sessions.length === 5000)

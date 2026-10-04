@@ -146,7 +146,8 @@ export async function seenPlayers(
 	const recent = f.since
 		? sql`AND steam_id IN (SELECT steam_id FROM player_sessions
 		                        WHERE server_id IN ${ids}
-		                          AND last_seen >= now() - (${f.since} * interval '1 day'))`
+		                          AND last_seen >= now() - (${f.since} * interval '1 day')
+		                          AND (left_at IS NULL OR left_at >= now() - (${f.since} * interval '1 day')))`
 		: sql``;
 
 	const rows = await env.db.execute<Row>(sql`

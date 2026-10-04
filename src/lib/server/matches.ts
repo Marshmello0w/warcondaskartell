@@ -80,7 +80,9 @@ export async function listMatches(
 			})
 			.from(matches)
 			.where(eq(matches.serverId, serverId))
-			.orderBy(desc(matches.id))
+			// By start, as matches_server_idx keeps them: a server's matches start in the order its
+			// rows are made, and by id alone the read walked every server's matches to the page.
+			.orderBy(desc(matches.startedAt), desc(matches.id))
 			.limit(pageSize)
 			.offset((page - 1) * pageSize)
 	]);
@@ -117,6 +119,7 @@ export async function loadMatch(
 		.limit(1);
 	if (!m || !m.endedAt) return null;
 	const finalScores = scoresOf(m.finalScores);
+	const span = killsOfMatch(matchId, m.startedAt, m.endedAt);
 	const [rows, points, [feed], live, [killCount]] = await Promise.all([
 		env.db
 			.select()
@@ -143,7 +146,8 @@ export async function loadMatch(
 		liveFactions(env, serverId),
 		env.db.execute<{ n: string }>(sql`
 			SELECT COUNT(*) AS n FROM kills
-			 WHERE server_id = ${serverId} AND ts >= ${new Date(m.startedAt.getTime() - 120_000)} AND match_row = ${matchId}::bigint`)
+			 WHERE server_id = ${serverId} AND ts >= ${span.from} AND ts <= ${span.to}
+			   AND match_row = ${matchId}::bigint`)
 	]);
 	const lines: MatchLine[] = rows.map((r) => ({
 		steamId: r.steamId,
