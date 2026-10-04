@@ -17,6 +17,7 @@ import {
 	CLIENT_IP_HEADER,
 	clientIp,
 	forLog,
+	requestContextForLog,
 	normalizeError,
 	resolveClientIp
 } from '$lib/server/http';
@@ -253,9 +254,10 @@ const handleRequest: Handle = async ({ event, resolve }) => {
 	return svelteKitHandler({ event, resolve: secured, auth, building });
 };
 
-export const handleError: HandleServerError = ({ error, status, message }) => {
+export const handleError: HandleServerError = ({ error, status, message, event }) => {
 	const known = normalizeError(error);
 	if (known) return { message: known.message, code: known.code || undefined };
-	if (status !== 404) console.error('unhandled', status, forLog(error));
+	if (status !== 404)
+		console.error('unhandled', status, requestContextForLog(event), forLog(error));
 	return { message: status === 404 ? 'Not found.' : message || 'Internal error.' };
 };

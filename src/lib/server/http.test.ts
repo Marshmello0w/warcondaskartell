@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
-import { addressKey, ApiError, CLIENT_IP_HEADER, forLog, publicMessage } from './http';
+import {
+	addressKey,
+	ApiError,
+	CLIENT_IP_HEADER,
+	forLog,
+	publicMessage,
+	requestContextForLog
+} from './http';
 
 describe('publicMessage', () => {
 	test('passes our own errors through', () => {
@@ -45,4 +52,52 @@ test('a failed query is logged without its parameters: for the servers table the
 	expect(logged).not.toContain('rcon.example.net');
 	expect(logged).not.toContain('lines');
 	expect(forLog('plain')).toBe('plain');
+});
+
+test('routing errors identify the method, actual path and matched route without query, headers or body', () => {
+	const url = new URL('https://panel.example/api/ingest/events?token=query-secret');
+	const context = requestContextForLog({
+		request: new Request(url, {
+			method: 'POST',
+			headers: { authorization: 'Bearer header-secret', 'x-warcon-relay-token': 'relay-secret' },
+			body: 'body-secret'
+		}),
+		url,
+		route: { id: '/api/ingest/events' },
+		params: {}
+	});
+	expect(context).toEqual({
+		method: 'POST',
+		path: '/api/ingest/events',
+		route: '/api/ingest/events'
+	});
+	expect(JSON.stringify(context)).not.toContain('secret');
+});
+
+test('a POST to a page or unmatched path can be distinguished from the feed endpoint', () => {
+	for (const route of ['/(app)', null] as const) {
+		const url = new URL('https://panel.example/');
+		expect(
+			requestContextForLog({
+				request: new Request(url, { method: 'POST' }),
+				url,
+				route: { id: route },
+				params: {}
+			})
+		).toEqual({ method: 'POST', path: '/', route });
+	}
+});
+
+test('invite and recovery tokens in route parameters are redacted', () => {
+	for (const token of ['sensitive%2Btoken', 'sensitive%2btoken', 'sensitive+token']) {
+		const url = new URL(`https://panel.example/join/${token}`);
+		expect(
+			requestContextForLog({
+				request: new Request(url, { method: 'POST' }),
+				url,
+				route: { id: '/(auth)/join/[token]' },
+				params: { token: 'sensitive+token' }
+			})
+		).toEqual({ method: 'POST', path: '/join/[redacted]', route: '/(auth)/join/[token]' });
+	}
 });

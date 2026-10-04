@@ -174,6 +174,29 @@ do not borrow current players' factions. Rate windows and previews use resolved 
 and separate round clocks rather than grouping kills by packet arrival. Feed liveness always
 uses Warcon's actual receipt.
 
+## Diagnosing HTTP 405 responses
+
+`POST method not allowed. No form actions exist for this page` is SvelteKit's page-form
+handler refusing a POST. It means the request was handled as a page, rather than reaching the
+feed endpoint. It is not a timestamp validation error. The first line
+`[warcon] this process owns the worker (all)` is normal worker leadership output.
+
+The bot's sender must POST to the **full endpoint** `https://YOUR-WARCON-HOST/api/ingest/events`.
+The game's `[WDServerFeed] Url` contains only `https://YOUR-WARCON-HOST`, because the game itself
+appends the path. Those settings are different. A proxy must preserve the endpoint path and
+POST method; inspect any HTTP redirects and the final response URL. Validation/authentication
+refusals from the endpoint have Warcon's JSON error shape, rather than a page action error.
+
+Warcon's server error log includes `method`, the received `path` and matched `route` before
+the stack trace. Query strings, credentials and request bodies are omitted. If the bot says
+the send succeeded, compare the exact request's URL, HTTP status, response body and time with
+that log entry. A successful feed delivery has HTTP 200 and the acknowledgement described
+above; a successful HTTP send alone does not confirm feed acceptance.
+
+If the correct endpoint produces a page-form error, compare the proxy access log with Warcon's
+received path and check which build/process the proxy serves. Rebuild and restart Warcon after
+updating its source; pulling a commit alone does not replace the running production build.
+
 ## Required bot change
 
 The bot currently forwards game bodies unchanged. Its receive handler must copy the body and

@@ -47,6 +47,28 @@ export function forLog(err: unknown): unknown {
 	return cause instanceof Error ? `${text}\ncause: ${cause.message}` : text;
 }
 
+/** Routing context for server errors; omit query strings, headers and bodies entirely. */
+export function requestContextForLog(
+	event: Pick<RequestEvent, 'request' | 'url' | 'route' | 'params'>
+): { method: string; path: string; route: string | null } {
+	const privateValues = new Set(
+		Object.entries(event.params)
+			.filter(([name, value]) => value && /token|secret|password|code/i.test(name))
+			.map(([, value]) => value)
+	);
+	const path = event.url.pathname
+		.split('/')
+		.map((part) => {
+			try {
+				return privateValues.has(decodeURIComponent(part)) ? '[redacted]' : part;
+			} catch {
+				return part;
+			}
+		})
+		.join('/');
+	return { method: event.request.method, path: path.slice(0, 2048), route: event.route.id };
+}
+
 export function apiError(raw: unknown): Response {
 	const err = normalizeError(raw);
 	if (err) {
