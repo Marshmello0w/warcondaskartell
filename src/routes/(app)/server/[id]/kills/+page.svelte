@@ -7,6 +7,7 @@
 	import { fmtNum, fmtTime } from '$lib/format';
 	import { toast } from '$lib/toast.svelte';
 	import FactionChip from '$lib/components/FactionChip.svelte';
+	import KillTime from '$lib/components/KillTime.svelte';
 	import {
 		EMPTY_FILTER,
 		KINDS,
@@ -14,6 +15,7 @@
 		killFilterParams,
 		killMatches,
 		parseKillFilter,
+		newestKillFirst,
 		type KillFilter
 	} from '$lib/kills';
 	import type { KillView, LiveView, Status } from '$lib/types';
@@ -48,6 +50,7 @@
 					limit: PAGE,
 					before: last?.ts,
 					beforeTime: last?.eventTime,
+					beforeId: last?.eventId,
 					count: append ? '' : '1'
 				})}`
 			);
@@ -92,7 +95,7 @@
 		const known = new Set(kills.map((k) => k.eventId));
 		const fresh = n.kills.filter((k) => !known.has(k.eventId) && killMatches(filter, k)).reverse();
 		if (!fresh.length) return;
-		kills = [...fresh, ...kills];
+		kills = [...fresh, ...kills].sort(newestKillFirst);
 		if (total !== null) total += fresh.length;
 	}
 	function onLive(v: LiveView) {
@@ -185,7 +188,9 @@
 			<tbody>
 				{#each kills as k (k.eventId)}
 					<tr class={k.teamKill ? 'text-warn' : ''}>
-						<td class="font-mono text-[12px] whitespace-nowrap text-mist-400">{fmtTime(k.ts)}</td>
+						<td class="font-mono text-[12px] whitespace-nowrap text-mist-400"
+							><KillTime kill={k} text={fmtTime(k.ts)} /></td
+						>
 						<td>
 							{#if k.killer}
 								<a href={dossier(k.killer.steamId)} class="hover:text-accent hover:underline"

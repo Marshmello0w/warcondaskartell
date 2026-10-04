@@ -408,7 +408,7 @@ describe.skipIf(!hasTestDb)('stats in messages', () => {
 				{
 					eventId: randomUUID(),
 					type: 'killed',
-					eventTime: 200,
+					eventTime: 0,
 					matchId: randomUUID(),
 					mapName: 'Europe',
 					killerName: GUNNER.name,

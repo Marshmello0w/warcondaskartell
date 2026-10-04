@@ -5,6 +5,7 @@ import {
 	killFilterParams,
 	killMatches,
 	parseKillFilter,
+	newestKillFirst,
 	type KillFilter
 } from './kills';
 import type { KillView } from './types';
@@ -25,6 +26,13 @@ const kill = (over: Partial<KillView> = {}): KillView => ({
 	...over
 });
 const f = (over: Partial<KillFilter>): KillFilter => ({ ...EMPTY_FILTER, ...over });
+
+test('a delayed live delivery joins canonical event order, with a stable tie on event id', () => {
+	const newer = kill({ eventId: 'z', ts: '2026-09-16T20:02:00Z' });
+	const old = kill({ eventId: 'old', ts: '2026-09-16T19:00:00Z' });
+	const tied = kill({ eventId: 'a', ts: newer.ts });
+	expect([old, tied, newer].sort(newestKillFirst).map((k) => k.eventId)).toEqual(['z', 'a', 'old']);
+});
 
 describe('parseKillFilter', () => {
 	test('reads what the page sends and drops the rest', () => {

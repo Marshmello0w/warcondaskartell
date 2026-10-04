@@ -30,7 +30,8 @@
 					match: view.match.id,
 					limit: PAGE,
 					before: last?.ts,
-					beforeTime: last?.eventTime
+					beforeTime: last?.eventTime,
+					beforeId: last?.eventId
 				})}`
 			);
 			if (my !== seq) return;

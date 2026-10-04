@@ -5,6 +5,8 @@
 	import { poll } from '$lib/poll';
 	import { watchLive, type KillsNotice } from '$lib/live';
 	import { causeLabel } from '$lib/causes';
+	import { newestKillFirst } from '$lib/kills';
+	import KillTime from '$lib/components/KillTime.svelte';
 	import { expSetLabel, fmtNum, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
 	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
@@ -166,8 +168,8 @@
 		if (n.serverId !== id || !n.kills.length) return;
 		const known = new Set(kills.map((k) => k.eventId));
 		const fresh = n.kills.filter((k) => !known.has(k.eventId)).reverse();
-		kills = [...fresh, ...kills].slice(0, KILLS_MAX);
-		feedAt = n.kills[n.kills.length - 1].ts;
+		kills = [...fresh, ...kills].sort(newestKillFirst).slice(0, KILLS_MAX);
+		feedAt = n.kills[n.kills.length - 1].warconReceivedAt ?? n.kills[n.kills.length - 1].ts;
 	}
 	let feedAgeS = $derived(
 		feedAt ? Math.max(0, Math.round((now - Date.parse(feedAt)) / 1000)) : null
@@ -600,7 +602,9 @@
 				<tbody>
 					{#each kills as k (k.eventId)}
 						<tr class={k.teamKill ? 'text-warn' : ''}>
-							<td class="font-mono text-[12px] whitespace-nowrap text-mist-400">{clock(k.ts)}</td>
+							<td class="font-mono text-[12px] whitespace-nowrap text-mist-400"
+								><KillTime kill={k} text={clock(k.ts)} /></td
+							>
 							<td>
 								{#if k.killer}
 									<a

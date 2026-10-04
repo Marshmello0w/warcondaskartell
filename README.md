@@ -595,6 +595,13 @@ that player alone. A dry run shows `…` for the stats and for whatever else it 
 
 ### Kill feed
 
+Forwarding bots can preserve their original packet receive time with the authenticated
+`sourceReceivedAt` contract. Configure explicit trusted relay sources and update the bot's
+receive/queue/sender; see [Forwarded kill feed](docs/feed-relay.md) for the exact JSON, headers,
+validation limits, acceptance response and clock/round handling. Direct game-server feeds remain
+compatible. Unknown times are shown as receipt times; delayed historical deliveries are stored
+without current rule actions. Existing timestamps are not rewritten.
+
 WARDOGS can push every kill to an HTTP endpoint: with `[WDServerFeed] Url` and `Token` set in
 `ServerSettings.ini`, the game process POSTs each kill (killer, victim, weapon or vehicle,
 distance, headshot and other context) a second or two after it happens. Warcon is that endpoint.
@@ -1173,13 +1180,24 @@ These need _View_ on the server unless the table says otherwise.
 | `DELETE /api/servers/:id/players/:steamId/notes/:noteId` | _Notes & watchlist_: the key's own notes; anyone's with _Others' notes_                                                                                                                                                                                                                                                                                                             |
 | `PUT /api/servers/:id/players/:steamId/watch`            | _Notes & watchlist_: `{"watched": true, "reason": "…"}` puts the player on the organisation's watchlist, `false` takes them off                                                                                                                                                                                                                                                     |
 
-A kill, as the kills route and the event stream carry it (`ts` is when the panel received it,
-`eventTime` the seconds on the match clock, `killer` is null for the environment):
+A kill, as the kills route and the event stream carry it (`ts` is the clock-derived event time,
+or the original packet receipt when timing is unknown; `eventTime` is elapsed round seconds,
+and `killer` is null for the environment). Original and Warcon receipts are separate; see the
+[relay/time contract](docs/feed-relay.md). For stable paging of same-frame kills, also send the
+last row's `eventId` as `beforeId` alongside `before` and `beforeTime`.
 
 ```json
 {
 	"eventId": "A1B5F452-4303-444B-AC04-984F47A6D27F",
 	"ts": "2026-09-24T13:00:59.233Z",
+	"eventAt": "2026-09-24T13:00:59.233Z",
+	"packetReceivedAt": "2026-09-24T13:00:59.233Z",
+	"warconReceivedAt": "2026-09-24T13:00:59.240Z",
+	"sourceReceivedAt": "2026-09-24T13:00:59.233000Z",
+	"timeQuality": "clock",
+	"clockId": "664d7305-1336-47f1-ad02-2d7d1994ffb8",
+	"historical": false,
+	"moderationEligible": true,
 	"map": "Kavkazi",
 	"eventTime": 130.91799926757812,
 	"killer": { "steamId": "76561198100000107", "name": "KillustratorPro", "faction": "Lonestar" },

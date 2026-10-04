@@ -128,7 +128,25 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 
 	/** A batch through the real ingest, stamped with the server's open match, then the rules. */
 	const post = async (serverId: string, events: ReturnType<typeof ev>[], at = new Date()) => {
-		const r = await ingestBatch(env, serverId, { serverId: 'i', serverName: 'x', events }, at);
+		// These tests exercise distance/count actions. Supply an actual progressing game clock;
+		// jumping 900 game seconds in a few milliseconds is now correctly considered ambiguous.
+		const [match] = await env.db
+			.select()
+			.from(matches)
+			.where(and(eq(matches.serverId, serverId), isNull(matches.endedAt)))
+			.orderBy(matches.id)
+			.limit(1);
+		const origin = match?.startedAt.getTime() ?? at.getTime() - 100_000;
+		const timed = events.map((e, i) => ({
+			...e,
+			eventTime: (at.getTime() - origin - (events.length - 1 - i)) / 1000
+		}));
+		const r = await ingestBatch(
+			env,
+			serverId,
+			{ serverId: 'i', serverName: 'x', events: timed },
+			at
+		);
 		await onKillsIngested(env, serverId, r.kills);
 		return r;
 	};
@@ -136,7 +154,7 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 		(
 			await env.db
 				.insert(matches)
-				.values({ serverId, startedAt: new Date(Date.now() - 60_000), map: 'Kavkazi' })
+				.values({ serverId, startedAt: new Date(Date.now() - 1000), map: 'Kavkazi' })
 				.returning({ id: matches.id })
 		)[0].id;
 	const endMatch = (id: number) =>
@@ -661,7 +679,10 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 			matchRow: number | null,
 			eventTime: number
 		) => ({
-			ts: received,
+			ts: new Date(received.getTime() - (70 - eventTime) * 1000),
+			eventAt: new Date(received.getTime() - (70 - eventTime) * 1000),
+			timeQuality: 'clock',
+			clockId: `test-match:${matchRow}`,
 			serverId: w.server.id,
 			eventId: newId(),
 			instanceId: 'i',
@@ -707,6 +728,9 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 		const at = new Date();
 		const row = (killer: string, cause: string, distanceM: number | null, eventTime: number) => ({
 			ts: at,
+			eventAt: at,
+			timeQuality: 'clock',
+			clockId: 'test-match:9101',
 			serverId: w.server.id,
 			eventId: newId(),
 			instanceId: 'i',

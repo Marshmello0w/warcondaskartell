@@ -136,6 +136,8 @@ export interface LongestKill {
 /** From the kill feed (kills table), for the range; null when this server has no feed set up and no kills. */
 export interface Combat {
 	kills: number;
+	/** Receipt-only records omitted from timed charts/counts, retained in the kill history. */
+	unresolvedTimes?: number;
 	headshots: number;
 	teamKills: number;
 	suicides: number;
@@ -584,19 +586,23 @@ async function loadCombat(
 		teamKills: string;
 		suicides: string;
 		vehicleKills: string;
+		unresolvedTimes: string;
 	}>(sql`
-		SELECT COUNT(*) AS kills, COUNT(*) FILTER (WHERE headshot) AS headshots,
-		       COUNT(*) FILTER (WHERE team_kill) AS "teamKills", COUNT(*) FILTER (WHERE suicide) AS suicides,
-		       COUNT(*) FILTER (WHERE cause LIKE 'Vehicle.%' OR cause LIKE 'Id.Vehicle.%') AS "vehicleKills"
+		SELECT COUNT(*) FILTER (WHERE time_quality = 'clock') AS kills,
+		       COUNT(*) FILTER (WHERE time_quality <> 'clock') AS "unresolvedTimes",
+		       COUNT(*) FILTER (WHERE time_quality = 'clock' AND headshot) AS headshots,
+		       COUNT(*) FILTER (WHERE time_quality = 'clock' AND team_kill) AS "teamKills",
+		       COUNT(*) FILTER (WHERE time_quality = 'clock' AND suicide) AS suicides,
+		       COUNT(*) FILTER (WHERE time_quality = 'clock' AND (cause LIKE 'Vehicle.%' OR cause LIKE 'Id.Vehicle.%')) AS "vehicleKills"
 		  FROM kills WHERE server_id = ${serverId} AND ts >= ${from}`);
-	if (!feed?.configured && !num(totals?.kills)) return null;
+	if (!feed?.configured && !num(totals?.kills) && !num(totals?.unresolvedTimes)) return null;
 	const [perBucket, causes, players, longest] = await Promise.all([
 		db.execute<{ b: Date; kills: string }>(sql`
 			SELECT to_timestamp(floor(extract(epoch FROM ts) / ${bucket}) * ${bucket}) AS b, COUNT(*) AS kills
-			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} GROUP BY b ORDER BY b`),
+			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND time_quality = 'clock' GROUP BY b ORDER BY b`),
 		db.execute<{ cause: string; kills: string; headshots: string }>(sql`
 			SELECT cause, COUNT(*) AS kills, COUNT(*) FILTER (WHERE headshot) AS headshots
-			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND cause IS NOT NULL AND NOT suicide
+			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND time_quality = 'clock' AND cause IS NOT NULL AND NOT suicide
 			 GROUP BY cause ORDER BY kills DESC LIMIT 12`),
 		db.execute<{
 			steamId: string;
@@ -611,22 +617,23 @@ async function loadCombat(
 				SELECT killer_steam_id AS steam_id, MAX(killer_name) AS name, COUNT(*) AS kills,
 				       COUNT(*) FILTER (WHERE headshot) AS headshots, COUNT(*) FILTER (WHERE team_kill) AS team_kills,
 				       AVG(distance_m) AS avg
-				  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND killer_steam_id IS NOT NULL AND NOT suicide
+				  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND time_quality = 'clock' AND killer_steam_id IS NOT NULL AND NOT suicide
 				 GROUP BY killer_steam_id),
 			d AS (
 				SELECT victim_steam_id AS steam_id, COUNT(*) AS deaths
-				  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} GROUP BY victim_steam_id)
+				  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND time_quality = 'clock' GROUP BY victim_steam_id)
 			SELECT k.steam_id AS "steamId", k.name, k.kills, COALESCE(d.deaths, 0) AS deaths, k.headshots,
 			       k.team_kills AS "teamKills", k.avg
 			  FROM k LEFT JOIN d ON d.steam_id = k.steam_id ORDER BY k.kills DESC LIMIT 25`),
 		db.execute<{ ts: Date; killer: string; victim: string; cause: string | null; d: number }>(sql`
 			SELECT ts, killer_name AS killer, victim_name AS victim, cause, distance_m AS d
-			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND distance_m IS NOT NULL
+			  FROM kills WHERE server_id = ${serverId} AND ts >= ${from} AND time_quality = 'clock' AND distance_m IS NOT NULL
 			   AND NOT suicide AND NOT team_kill
 			 ORDER BY distance_m DESC LIMIT 5`)
 	]);
 	return {
 		kills: num(totals?.kills),
+		unresolvedTimes: num(totals?.unresolvedTimes),
 		headshots: num(totals?.headshots),
 		teamKills: num(totals?.teamKills),
 		suicides: num(totals?.suicides),

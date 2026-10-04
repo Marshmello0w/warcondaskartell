@@ -90,6 +90,7 @@ export interface PublicStatus {
 export interface PublicKill {
 	eventId: string;
 	ts: string;
+	timeQuality?: string;
 	/** seconds on the match clock */
 	eventTime: number;
 	/** null: the environment */
@@ -110,6 +111,7 @@ export const PUBLIC_KILLS = 20;
 export const publicKill = (k: KillView): PublicKill => ({
 	eventId: k.eventId,
 	ts: k.ts,
+	timeQuality: k.timeQuality,
 	eventTime: k.eventTime,
 	killer: k.killer ? { name: k.killer.name, faction: k.killer.faction } : null,
 	victim: { name: k.victim.name, faction: k.victim.faction },

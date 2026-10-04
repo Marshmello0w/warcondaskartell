@@ -14,6 +14,7 @@ import { feedKills, feedPosts } from '$lib/server/metrics';
 const POSTS_PER_MINUTE = 1200;
 
 export const POST = route(async (event) => {
+	const receivedAt = new Date();
 	const env = getEnv();
 	const token = parseFeedBearer(event.request.headers.get('authorization'));
 	const serverId = token ? await resolveFeedToken(env, token) : null;
@@ -34,14 +35,30 @@ export const POST = route(async (event) => {
 	} catch {
 		return rejected(400, 'Malformed JSON body.');
 	}
-	const r = await ingestBatch(env, serverId, body);
+	const r = await ingestBatch(
+		env,
+		serverId,
+		body,
+		receivedAt,
+		event.request.headers.get('x-warcon-relay-token')
+	).catch((err) => {
+		if (err instanceof ApiError) feedPosts.inc({ outcome: 'rejected' });
+		throw err;
+	});
 	feedPosts.inc({ outcome: 'accepted' });
 	feedKills.inc({ result: 'accepted' }, r.accepted);
 	feedKills.inc({ result: 'skipped' }, r.skipped);
 	feedKills.inc({ result: 'duplicate' }, r.duplicates);
 	// Browsers watching the server see them at once; the worker's kill rules get their turn.
 	if (r.kills.length) gateway().killsIngested(env, serverId, r.kills);
-	return apiJson({ ok: true, accepted: r.accepted, skipped: r.skipped, duplicates: r.duplicates });
+	return apiJson({
+		ok: true,
+		accepted: r.accepted,
+		skipped: r.skipped,
+		duplicates: r.duplicates,
+		receipt: r.receipt,
+		timing: r.timing
+	});
 });
 
 function rejected(status: number, message: string): never {

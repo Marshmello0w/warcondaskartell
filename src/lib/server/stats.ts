@@ -22,6 +22,12 @@ export async function purgeServerStats(
 	server: ServerRow
 ): Promise<PurgeCounts> {
 	const counts = await env.db.transaction(async (tx) => {
+		await tx.execute(
+			sql`SELECT pg_advisory_xact_lock(hashtextextended(${'feed:' + server.id}, 0))`
+		);
+		// The deleted match rows invalidate their anchors. Keep the permanent event ledger so
+		// retries cannot resurrect the explicitly purged kills as fresh events.
+		await tx.execute(sql`DELETE FROM feed_clocks WHERE server_id = ${server.id}`);
 		const del = async (table: 'kills' | 'match_players' | 'matches') => {
 			const [row] = await tx.execute<{ n: string }>(sql`
 				WITH d AS (DELETE FROM ${sql.raw(table)} WHERE server_id = ${server.id} RETURNING 1)

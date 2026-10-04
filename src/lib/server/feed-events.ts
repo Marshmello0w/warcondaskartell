@@ -2,13 +2,13 @@
 // event bus (the SSE route fans them to browsers; in the split roles every web process gets them
 // through the relay stream), and the team-kill rules get their turn. Their intents go through
 // the same outbox as every other trigger, so delivery, audit and the Discord mirror are shared.
-// The Kill rate and Kill distance rules see every batch; the rest of the work is for batches with
-// team kills.
-import { and, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+// Only fresh events from a resolved current clock reach moderation rules; historical/unknown
+// events are still published and retained in history.
+import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { emit } from './events';
-import { kills, matches } from './db/schema';
-import { killsOfMatch } from './matches';
+import { kills, feedClocks, matches } from './db/schema';
+import { FEED_FUTURE_MAX_MS, FEED_LIVE_MAX_MS } from './feed-time';
 import {
 	enabledTriggers,
 	killDistanceAct,
@@ -28,7 +28,6 @@ import {
 	countsForRate,
 	KILL_RATE_FLAG,
 	killRateStep,
-	killTimes,
 	pruneTracks,
 	type KillRateConfig,
 	type RateTrack,
@@ -38,7 +37,6 @@ import {
 	countsForDistance,
 	killDistanceSettingsKey,
 	killDistanceStep,
-	matchKey,
 	type DistanceTrack,
 	type DistanceTracks,
 	type KillDistanceConfig
@@ -61,8 +59,36 @@ export async function onKillsIngested(
 ): Promise<void> {
 	if (!kills.length) return;
 	emit({ type: 'kills', serverId, kills });
+	// Recheck freshness at execution too: the web-to-worker queue may itself be delayed.
+	const now = Date.now();
+	let live = kills.filter(
+		(k) =>
+			k.moderationEligible === true &&
+			!k.historical &&
+			k.timeQuality === 'clock' &&
+			k.clockId &&
+			k.eventAt &&
+			k.packetReceivedAt &&
+			Date.parse(k.eventAt) >= now - FEED_LIVE_MAX_MS &&
+			Date.parse(k.eventAt) <= now + FEED_FUTURE_MAX_MS &&
+			Date.parse(k.packetReceivedAt) >= now - FEED_LIVE_MAX_MS
+	);
+	if (!live.length) return;
+	const [active] = await env.db
+		.select({ id: feedClocks.id, endedAt: feedClocks.endedAt, matchEndedAt: matches.endedAt })
+		.from(feedClocks)
+		.leftJoin(
+			matches,
+			and(eq(matches.id, feedClocks.matchRow), eq(matches.serverId, feedClocks.serverId))
+		)
+		.where(eq(feedClocks.serverId, serverId))
+		.orderBy(desc(feedClocks.lastReceiptAt))
+		.limit(1);
+	if (!active) return;
+	live = live.filter((k) => !active.endedAt && !active.matchEndedAt && k.clockId === active.id);
+	if (!live.length) return;
 	try {
-		await actOnKillRate(env, serverId, kills);
+		await actOnKillRate(env, serverId, live);
 	} catch (err) {
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] kill-rate rules on ${serverId}:`, publicMessage(err));
@@ -70,12 +96,12 @@ export async function onKillsIngested(
 	// what the rules' texts say about a killer, their stats read once for the whole batch
 	const vars = killerVars(env, serverId);
 	try {
-		await actOnKillDistance(env, serverId, kills, vars);
+		await actOnKillDistance(env, serverId, live, vars);
 	} catch (err) {
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] kill-distance rules on ${serverId}:`, publicMessage(err));
 	}
-	const teamKills = kills.filter((k) => k.teamKill && k.killer);
+	const teamKills = live.filter((k) => k.teamKill && k.killer);
 	if (!teamKills.length) return;
 	const m = memoryOf(serverId);
 	void notifyTeamKills(env, serverId, m?.status?.serverName || m?.server.name || '', teamKills);
@@ -92,7 +118,7 @@ export async function onKillsIngested(
  * acted on only in the worker, and a restart starting the windows over costs a flag, not data
  * (the kills themselves are in the table). Kept only for servers with the rule on.
  */
-const rateTracks = new Map<string, { serverId: string; tracks: RateTracks }>();
+const rateTracks = new Map<string, { serverId: string; clock: string; tracks: RateTracks }>();
 
 async function actOnKillRate(env: Env, serverId: string, batch: KillView[]): Promise<void> {
 	const rows = (await enabledTriggers(env, serverId)).filter((r) => r.kind === 'kill_rate');
@@ -100,12 +126,8 @@ async function actOnKillRate(env: Env, serverId: string, batch: KillView[]): Pro
 	for (const [id, t] of rateTracks)
 		if (t.serverId === serverId && !live.has(id)) rateTracks.delete(id);
 	if (!rows.length) return;
-	const times = killTimes(
-		Date.parse(batch[0].ts),
-		batch.map((k) => k.eventTime)
-	);
 	const counted = batch
-		.map((k, i) => ({ k, at: times[i] }))
+		.map((k) => ({ k, at: Date.parse(k.eventAt!) }))
 		.filter(({ k }) =>
 			countsForRate({ killer: k.killer?.steamId, suicide: k.suicide, cause: k.cause })
 		)
@@ -117,8 +139,8 @@ async function actOnKillRate(env: Env, serverId: string, batch: KillView[]): Pro
 	for (const row of rows) {
 		const cfg = row.config as KillRateConfig;
 		let entry = rateTracks.get(row.id);
-		if (!entry) {
-			entry = { serverId, tracks: new Map() };
+		if (!entry || entry.clock !== batch[0].clockId) {
+			entry = { serverId, clock: batch[0].clockId!, tracks: new Map() };
 			rateTracks.set(row.id, entry);
 		}
 		for (const { k, at } of counted) {
@@ -179,26 +201,6 @@ export function forgetKillDistance(serverId?: string): void {
 	else distanceMemory.clear();
 }
 
-/**
- * The match a batch was stamped with when it came in: every kill of it carries the open match of
- * that moment (feed.ts), so any one says which; null when none was open.
- */
-async function stampedMatch(env: Env, serverId: string, batch: KillView[]): Promise<number | null> {
-	const at = new Date(batch[0].ts);
-	const [stamp] = await env.db
-		.select({ row: kills.matchRow })
-		.from(kills)
-		.where(
-			and(
-				eq(kills.serverId, serverId),
-				eq(kills.eventId, batch[0].eventId),
-				gte(kills.ts, new Date(at.getTime() - 60_000))
-			)
-		)
-		.limit(1);
-	return stamp?.row ?? null;
-}
-
 async function actOnKillDistance(
 	env: Env,
 	serverId: string,
@@ -215,7 +217,7 @@ async function actOnKillDistance(
 	if (mine) for (const id of mine.keys()) if (!live.has(id)) mine.delete(id);
 	// The kills each rule counts, in the order the game played them. Most batches have none, and
 	// then nothing is read.
-	const inOrder = [...batch].sort((a, b) => a.eventTime - b.eventTime);
+	const inOrder = [...batch].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
 	const counted = rows
 		.map((row) => {
 			const cfg = row.config as KillDistanceConfig;
@@ -232,7 +234,7 @@ async function actOnKillDistance(
 		.filter((r) => r.hits.length);
 	if (!counted.length) return;
 	const now = Date.now();
-	const match = matchKey(await stampedMatch(env, serverId, batch), Date.parse(batch[0].ts));
+	const match = `clock:${batch[0].clockId}`;
 	if (!mine) distanceMemory.set(serverId, (mine = new Map()));
 	const out: Evaluation = { intents: [], updates: [] };
 	// Acting starts the player's hold; if the action cannot be queued, neither does the hold.
@@ -349,12 +351,9 @@ interface CauseCount {
 }
 
 /**
- * How many team kills each of these players has in the match the batch arrived in, up to and
- * including the batch, by cause: the rows that carry that match, as its match page counts them.
- * Leaving and joining again does not start the count over, and a batch acted on late does not
- * count the ones that came after it. A batch that came in while no match was open (a server's
- * first seconds, or just after its stats were purged) counts with the other such kills of the
- * hour before.
+ * Eligible live team kills in the same resolved clock, by cause. Historical/ambiguous records
+ * cannot increase a later live action's count. The original ingest receipt bounds a queued
+ * batch too, including distinct kills with the same eventTime/millisecond event timestamp.
  */
 async function teamKillsThisMatch(
 	env: Env,
@@ -362,24 +361,8 @@ async function teamKillsThisMatch(
 	batch: KillView[],
 	steamIds: string[]
 ): Promise<Map<string, CauseCount[]>> {
-	// Every kill of a batch was stamped with the match open at receipt (feed.ts); any one says which.
-	const at = new Date(batch[0].ts);
-	const [stamp] = await env.db
-		.select({ row: kills.matchRow, startedAt: matches.startedAt, endedAt: matches.endedAt })
-		.from(kills)
-		.leftJoin(matches, and(eq(matches.id, kills.matchRow), eq(matches.serverId, kills.serverId)))
-		.where(
-			and(
-				eq(kills.serverId, serverId),
-				eq(kills.eventId, batch[0].eventId),
-				gte(kills.ts, new Date(at.getTime() - 60_000))
-			)
-		)
-		.limit(1);
-	const match =
-		stamp?.row != null && stamp.startedAt
-			? killsOfMatch(stamp.row, stamp.startedAt, stamp.endedAt)
-			: null;
+	const at = new Date(Math.max(...batch.map((k) => Date.parse(k.ts))));
+	const received = new Date(Math.max(...batch.map((k) => Date.parse(k.warconReceivedAt!))));
 	const rows = await env.db
 		.select({ steamId: kills.killerSteamId, cause: kills.cause, n: sql<number>`COUNT(*)` })
 		.from(kills)
@@ -388,8 +371,9 @@ async function teamKillsThisMatch(
 				eq(kills.serverId, serverId),
 				inArray(kills.killerSteamId, steamIds),
 				eq(kills.teamKill, true),
-				stamp?.row != null ? eq(kills.matchRow, stamp.row) : isNull(kills.matchRow),
-				gte(kills.ts, match?.from ?? new Date(at.getTime() - 3600_000)),
+				eq(kills.clockId, batch[0].clockId!),
+				eq(kills.moderationEligible, true),
+				lte(kills.warconReceivedAt, received),
 				lte(kills.ts, at)
 			)
 		)

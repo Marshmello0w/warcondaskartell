@@ -4,7 +4,6 @@ import {
 	killRateReplay,
 	killRateStep,
 	killRateVerdict,
-	killTimes,
 	pruneTracks,
 	validateKillRate,
 	type KillRateConfig,
@@ -154,18 +153,17 @@ describe('killRateReplay', () => {
 	});
 });
 
-describe('killTimes', () => {
-	test('spaces a batch out by the match clock, back from its latest kill', () => {
-		expect(killTimes(1_000_000, [100, 400, 700])).toEqual([400_000, 700_000, 1_000_000]);
+test('a replay never combines kills from different round clocks', () => {
+	const k = (clockId: string, at: number) => ({
+		clockId,
+		at,
+		steamId: A,
+		name: 'a',
+		headshot: false
 	});
-	test('a batch at one moment stays at its receipt time', () => {
-		expect(killTimes(5000, [42, 42])).toEqual([5000, 5000]);
-	});
-	test('a new match inside the batch sends its kills back, never forward', () => {
-		const [before, after] = killTimes(1_000_000, [900, 3]);
-		expect(before).toBe(1_000_000);
-		expect(after).toBeLessThan(1_000_000 - 5 * MIN);
-	});
+	expect(
+		killRateReplay(cfg({ maxKills: 3 }), [k('old', 1000), k('old', 2000), k('new', 3000)])
+	).toEqual([]);
 });
 
 describe('kills out of order', () => {

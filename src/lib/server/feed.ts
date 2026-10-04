@@ -18,13 +18,15 @@ import {
 	type SQL
 } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Env } from './env';
 import { decryptSecret, encryptSecret } from './crypto';
 import { ApiError } from './http';
 import { writeAudit } from './audit';
 import {
 	kills,
+	feedEvents,
+	feedClocks,
 	matches,
 	playerSessions,
 	serverLive,
@@ -36,6 +38,7 @@ import type { KillView } from '$lib/types';
 import { VEHICLE_TAGS, type KillFilter } from '$lib/kills';
 import type { SessionUser } from './access';
 import { FEED_TOKEN_PREFIX, isTeamKill, parseBatch, type ParsedKill } from './feed-core';
+import { FEED_HISTORY_MAX_MS, feedReceipt, resolveFeedClock, stampFeedKill } from './feed-time';
 
 const hashToken = (token: string): string =>
 	createHash('sha256').update(token, 'utf8').digest('hex');
@@ -137,21 +140,40 @@ export const forgetFeedTokens = (): void => tokenCache.clear();
 const FEED_AT_EVERY_MS = 10_000;
 const feedAtWritten = new Map<string, number>();
 
-/** Dedupe looks only this far back: retries come seconds later, and chunk exclusion keeps it cheap. */
-const DEDUPE_WINDOW_MS = 24 * 3600_000;
-
 export interface IngestResult {
 	accepted: number;
 	skipped: number;
 	duplicates: number;
 	/** what was written, in feed order */
 	kills: KillView[];
+	receipt: {
+		packetReceivedAt: string;
+		warconReceivedAt: string;
+		sourceReceivedAt: string | null;
+		relaySourceId: string | null;
+	};
+	timing: {
+		clock: number;
+		ambiguous: number;
+		historical: number;
+		moderationEligible: number;
+		reason: string | null;
+	};
 }
 
 export function killView(r: KillRow): KillView {
 	return {
 		eventId: r.eventId,
 		ts: r.ts.toISOString(),
+		eventAt: r.eventAt?.toISOString() ?? null,
+		packetReceivedAt: r.packetReceivedAt?.toISOString() ?? null,
+		warconReceivedAt: r.warconReceivedAt?.toISOString() ?? null,
+		sourceReceivedAt: r.sourceReceivedAt,
+		timeQuality: r.timeQuality,
+		clockId: r.clockId,
+		matchRow: r.matchRow,
+		historical: r.historical,
+		moderationEligible: r.moderationEligible,
 		map: r.map,
 		eventTime: r.eventTime,
 		killer: r.killerSteamId
@@ -168,15 +190,17 @@ export function killView(r: KillRow): KillView {
 }
 
 /**
- * Writes one batch: parse, drop what is already stored, add the open match and both factions
- * from the sessions the worker keeps, insert. `now` is the receipt time.
+ * Writes one batch atomically with its permanent dedupe ledger and clock state. `now` is
+ * Warcon's receipt, independent of the trusted relay's original receipt.
  */
 export async function ingestBatch(
 	env: Env,
 	serverId: string,
 	body: unknown,
-	now = new Date()
+	now = new Date(),
+	relayToken?: string | null
 ): Promise<IngestResult> {
+	const receipt = feedReceipt(env.FEED_RELAY_SOURCES, serverId, body, now, relayToken);
 	let batch;
 	try {
 		batch = parseBatch(body);
@@ -186,10 +210,10 @@ export async function ingestBatch(
 	let fresh: ParsedKill[] = batch.kills;
 	let duplicates = 0;
 	let written: KillView[] = [];
+	let reason: string | null = null;
 	if (fresh.length)
-		// The table cannot hold a unique event id (a hypertable's unique indexes must include ts),
-		// so the look and the insert are one turn per server: the game sends a batch again when it
-		// did not hear back, and a copy that arrived mid-write passed the look and was written too.
+		// The ordinary ledger has a permanent (server,event) key; the hypertable cannot. The
+		// server lock also serialises clock transitions with dedupe and kill insertion.
 		await env.db.transaction(async (db) => {
 			await db.execute(
 				sql`SELECT pg_advisory_xact_lock(hashtextextended(${'feed:' + serverId}, 0))`
@@ -198,15 +222,9 @@ export async function ingestBatch(
 			const seen = new Set(
 				(
 					await db
-						.select({ eventId: kills.eventId })
-						.from(kills)
-						.where(
-							and(
-								eq(kills.serverId, serverId),
-								inArray(kills.eventId, ids),
-								gt(kills.ts, new Date(now.getTime() - DEDUPE_WINDOW_MS))
-							)
-						)
+						.select({ eventId: feedEvents.eventId })
+						.from(feedEvents)
+						.where(and(eq(feedEvents.serverId, serverId), inArray(feedEvents.eventId, ids)))
 				).map((r) => r.eventId)
 			);
 			const once = new Set<string>();
@@ -224,7 +242,7 @@ export async function ingestBatch(
 					)
 				)
 			];
-			const [open, [match]] = await Promise.all([
+			const [open, observed, clocks] = await Promise.all([
 				db
 					.select({ steamId: playerSessions.steamId, faction: playerSessions.faction })
 					.from(playerSessions)
@@ -237,12 +255,64 @@ export async function ingestBatch(
 					)
 					.orderBy(playerSessions.id),
 				db
-					.select({ id: matches.id })
+					.select({ id: matches.id, map: matches.map, endedAt: matches.endedAt })
 					.from(matches)
-					.where(and(eq(matches.serverId, serverId), isNull(matches.endedAt)))
-					.orderBy(sql`${matches.id} DESC`)
-					.limit(1)
+					.where(
+						and(
+							eq(matches.serverId, serverId),
+							lte(matches.startedAt, receipt.packetReceivedAt),
+							or(isNull(matches.endedAt), gt(matches.endedAt, receipt.packetReceivedAt))
+						)
+					)
+					.limit(2),
+				db
+					.select()
+					.from(feedClocks)
+					.where(
+						and(
+							eq(feedClocks.serverId, serverId),
+							gte(
+								feedClocks.lastReceiptAt,
+								new Date(now.getTime() - FEED_HISTORY_MAX_MS - 7 * 86400_000)
+							)
+						)
+					)
 			]);
+			const matchRow =
+				observed.length === 1 && observed[0].map === batch.kills[0]?.map ? observed[0].id : null;
+			const resolved =
+				observed.filter((m) => m.map === batch.kills[0]?.map).length > 1
+					? { clock: null, create: false, close: null, reason: 'overlapping_observed_rounds' }
+					: resolveFeedClock(
+							clocks,
+							batch,
+							receipt,
+							matchRow,
+							randomUUID(),
+							matchRow !== null ? observed[0].endedAt : null
+						);
+			reason = resolved.reason;
+			if (resolved.close)
+				await db
+					.update(feedClocks)
+					.set({ endedAt: receipt.packetReceivedAt })
+					.where(eq(feedClocks.id, resolved.close));
+			if (resolved.clock) {
+				if (resolved.create) await db.insert(feedClocks).values({ ...resolved.clock, serverId });
+				else
+					await db
+						.update(feedClocks)
+						.set({
+							matchRow: resolved.clock.matchRow,
+							endedAt: resolved.clock.endedAt,
+							lastReceiptAt: resolved.clock.lastReceiptAt,
+							maxEventTime: resolved.clock.maxEventTime
+						})
+						.where(eq(feedClocks.id, resolved.clock.id));
+			}
+			await db
+				.insert(feedEvents)
+				.values(fresh.map((k) => ({ serverId, eventId: k.eventId, firstReceivedAt: now })));
 			// Newest open session wins when a player somehow has two.
 			const faction = new Map<string, string | null>();
 			for (const s of open) faction.set(s.steamId, s.faction);
@@ -250,15 +320,22 @@ export async function ingestBatch(
 				.insert(kills)
 				.values(
 					fresh.map((k) => {
-						const kf = k.killerSteamId ? (faction.get(k.killerSteamId) ?? null) : null;
-						const vf = faction.get(k.victimSteamId) ?? null;
+						const stamp = stampFeedKill(receipt, resolved.clock, k.eventTime);
+						// Current player factions are not evidence about a historical kill.
+						const kf =
+							stamp.moderationEligible && k.killerSteamId
+								? (faction.get(k.killerSteamId) ?? null)
+								: null;
+						const vf = stamp.moderationEligible ? (faction.get(k.victimSteamId) ?? null) : null;
 						return {
-							ts: now,
+							...stamp,
+							...receipt,
 							serverId,
 							eventId: k.eventId,
 							instanceId: batch.instanceId,
 							matchId: k.matchId,
-							matchRow: match?.id ?? null,
+							matchRow:
+								stamp.eventAt && !resolved.reason ? (resolved.clock?.matchRow ?? matchRow) : null,
 							eventTime: k.eventTime,
 							map: k.map,
 							killerSteamId: k.killerSteamId,
@@ -289,7 +366,25 @@ export async function ingestBatch(
 			.values({ serverId, feedAt: now })
 			.onConflictDoUpdate({ target: serverLive.serverId, set: { feedAt: now } });
 	}
-	return { accepted: fresh.length, skipped: batch.skipped, duplicates, kills: written };
+	return {
+		accepted: fresh.length,
+		skipped: batch.skipped,
+		duplicates,
+		kills: written,
+		receipt: {
+			packetReceivedAt: receipt.packetReceivedAt.toISOString(),
+			warconReceivedAt: now.toISOString(),
+			sourceReceivedAt: receipt.sourceReceivedAt,
+			relaySourceId: receipt.relaySourceId
+		},
+		timing: {
+			clock: written.filter((k) => k.timeQuality === 'clock').length,
+			ambiguous: written.filter((k) => k.timeQuality === 'ambiguous').length,
+			historical: written.filter((k) => k.historical).length,
+			moderationEligible: written.filter((k) => k.moderationEligible).length,
+			reason
+		}
+	};
 }
 
 const STEAM_RE = /^\d{17}$/;
@@ -299,10 +394,11 @@ const likeEscape = (s: string): string => s.replace(/[\\%_]/g, '\\$&');
 const sideIs = (needle: string, steamId: AnyPgColumn, name: AnyPgColumn) =>
 	STEAM_RE.test(needle) ? eq(steamId, needle) : ilike(name, `%${likeEscape(needle)}%`);
 
-/** A page boundary: the last row shown, as (ts, eventTime); eventTime null means ts alone. */
+/** A stable page boundary: (ts,eventTime,eventId); the older two-part cursor remains accepted. */
 export interface KillsBefore {
 	ts: Date;
 	eventTime: number | null;
+	eventId?: string | null;
 }
 
 /** One match's kills: the rows carrying its match row, within its window on (server_id, ts). */
@@ -324,12 +420,14 @@ function killWhere(
 		conds.push(eq(kills.matchRow, match.matchRow), gte(kills.ts, match.from));
 		if (match.to) conds.push(lte(kills.ts, match.to));
 	}
-	// A batch's kills share a receipt time, so a page boundary is the pair the feed sorts by.
+	// Same-frame kills can share both event time fields; eventId breaks that tie without loss.
 	if (before)
 		conds.push(
 			before.eventTime === null
 				? lt(kills.ts, before.ts)
-				: sql`(${kills.ts}, ${kills.eventTime}) < (${before.ts}, ${before.eventTime})`
+				: before.eventId
+					? sql`(${kills.ts}, ${kills.eventTime}, ${kills.eventId} COLLATE "C") < (${before.ts}, ${before.eventTime}, ${before.eventId})`
+					: sql`(${kills.ts}, ${kills.eventTime}) < (${before.ts}, ${before.eventTime})`
 		);
 	if (f.killer) conds.push(sideIs(f.killer, kills.killerSteamId, kills.killerName));
 	if (f.victim) conds.push(sideIs(f.victim, kills.victimSteamId, kills.victimName));
@@ -381,7 +479,7 @@ export async function recentKills(
 		.select()
 		.from(kills)
 		.where(killWhere(serverId, before, filter, match))
-		.orderBy(desc(kills.ts), desc(kills.eventTime))
+		.orderBy(desc(kills.ts), desc(kills.eventTime), desc(sql`${kills.eventId} COLLATE "C"`))
 		.limit(limit);
 	return rows.map(killView);
 }

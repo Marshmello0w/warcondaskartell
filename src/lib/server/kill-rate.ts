@@ -68,17 +68,6 @@ export interface RateTrack {
 export type RateTracks = Map<string, RateTrack>;
 
 /**
- * When each kill of one ingest batch happened (ms). Every kill of a batch is stamped with the time
- * it was received, so a batch the game held back would put minutes of kills on one instant; the
- * match clock (`eventTime`, seconds) spaces them back out, counted back from the batch's latest.
- * A new match inside the batch sends its kills back past the window: counted short, never flagged.
- */
-export function killTimes(receivedMs: number, eventTimes: number[]): number[] {
-	const latest = Math.max(...eventTimes);
-	return eventTimes.map((t) => receivedMs - Math.max(0, latest - t) * 1000);
-}
-
-/**
  * Adds one counted kill at `at` (ms) to its killer's window and returns the verdict when it
  * flags them now. The window is judged at the player's latest kill, so a kill that arrives late
  * (a batch that finished after the next one) lands in its place rather than on top.
@@ -123,6 +112,7 @@ export function pruneTracks(cfg: KillRateConfig, tracks: RateTracks, now: number
 
 export interface RateKill {
 	at: number;
+	clockId?: string;
 	steamId: string;
 	name: string;
 	headshot: boolean;
@@ -133,9 +123,12 @@ export function killRateReplay(
 	cfg: KillRateConfig,
 	kills: RateKill[]
 ): (RateKill & { verdict: string })[] {
-	const tracks: RateTracks = new Map();
+	const byClock = new Map<string, RateTracks>();
 	const out: (RateKill & { verdict: string })[] = [];
 	for (const k of [...kills].sort((a, b) => a.at - b.at)) {
+		const clock = k.clockId ?? 'unspecified';
+		let tracks = byClock.get(clock);
+		if (!tracks) byClock.set(clock, (tracks = new Map()));
 		const verdict = killRateStep(cfg, tracks, k.steamId, k.at, k.headshot);
 		if (verdict) out.push({ ...k, verdict });
 	}

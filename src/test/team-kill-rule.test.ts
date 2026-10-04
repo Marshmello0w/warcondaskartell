@@ -8,9 +8,16 @@
 // migration 0035.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
-import { kills, matches, outbox, playerSessions, triggers } from '$lib/server/db/schema';
+import {
+	feedClocks,
+	kills,
+	matches,
+	outbox,
+	playerSessions,
+	triggers
+} from '$lib/server/db/schema';
 import { acquireOrRenew, releaseOwnership } from '$lib/server/leadership';
 import { onKillsIngested } from '$lib/server/feed-events';
 import { ingestBatch } from '$lib/server/feed';
@@ -65,6 +72,10 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 	let there: string;
 	let earlier = 0;
 	let current = 0;
+	const roundStarts = new Map<number, Date>();
+	const openOrigin = ago(60 * MIN);
+	const fixtureClock = (serverId: string, matchRow: number | null, at: Date) =>
+		`fixture:${serverId}:${matchRow ?? (at < openOrigin ? 'old' : 'open')}`;
 
 	/** What a rule did about a player, oldest first: the action and the count it acted on. */
 	const actionsOn = async (rule: string, steamId: string) =>
@@ -84,6 +95,13 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 		at: Date
 	) => ({
 		ts: at,
+		eventAt: at,
+		packetReceivedAt: at,
+		warconReceivedAt: at,
+		timeQuality: 'clock',
+		clockId: fixtureClock(serverId, matchRow, at),
+		moderationEligible: true,
+		historical: false,
 		serverId,
 		eventId: randomUUID(),
 		instanceId: 'i',
@@ -109,7 +127,17 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 		now = new Date(),
 		cause?: string | null
 	) => {
-		const r = await ingestBatch(env, serverId, batchOf(killer, MATE, cause), now);
+		const [match] = await env.db
+			.select()
+			.from(matches)
+			.where(and(eq(matches.serverId, serverId), isNull(matches.endedAt)))
+			.orderBy(matches.id)
+			.limit(1);
+		const origin = match?.startedAt ?? openOrigin;
+		const body = { ...batchOf(killer, MATE, cause), serverId: `boot:${serverId}` };
+		body.events[0].mapName = match?.map ?? 'Kavkazi';
+		body.events[0].eventTime = (now.getTime() - origin.getTime()) / 1000;
+		const r = await ingestBatch(env, serverId, body, now);
 		expect(r.kills.map((k) => k.teamKill)).toEqual([true]);
 		return r.kills;
 	};
@@ -146,13 +174,32 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 		there = await ruleOn(w.otherServer.id);
 		// The match before this one ended 40 minutes ago; this one is still on. The org's other
 		// server has no match row yet, so its kills come in stamped with none.
-		[{ id: earlier }, { id: current }] = await env.db
+		const rounds = await env.db
 			.insert(matches)
 			.values([
 				{ serverId: w.server.id, startedAt: ago(120 * MIN), endedAt: ago(40 * MIN), map: 'Europe' },
 				{ serverId: w.server.id, startedAt: ago(40 * MIN), map: 'Kavkazi' }
 			])
-			.returning({ id: matches.id });
+			.returning({ id: matches.id, startedAt: matches.startedAt });
+		[earlier, current] = rounds.map((r) => r.id);
+		for (const r of rounds) roundStarts.set(r.id, r.startedAt);
+		for (const serverId of [w.server.id, w.otherServer.id]) {
+			const matchRow = serverId === w.server.id ? current : null;
+			const anchorAt = matchRow ? roundStarts.get(matchRow)! : openOrigin;
+			const lastReceiptAt = ago(15 * MIN);
+			await env.db.insert(feedClocks).values({
+				id: fixtureClock(serverId, matchRow, lastReceiptAt),
+				serverId,
+				instanceId: `boot:${serverId}`,
+				sourceId: 'direct',
+				map: 'Kavkazi',
+				matchRow,
+				anchorAt,
+				firstReceiptAt: anchorAt,
+				lastReceiptAt,
+				maxEventTime: (lastReceiptAt.getTime() - anchorAt.getTime()) / 1000
+			});
+		}
 		const session = (
 			serverId: string,
 			p: typeof STAYER,
@@ -230,7 +277,7 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 		]);
 	});
 
-	test('a batch acted on after its match closed counts in that match; the next one starts over', async () => {
+	test('a batch reaching the worker after its match closed cannot act; the next round starts over', async () => {
 		const stamped = await receive(w.server.id, STAYER);
 		// The worker sees the next match begin before it gets to the batch.
 		await env.db.update(matches).set({ endedAt: new Date() }).where(eq(matches.id, current));
@@ -241,14 +288,13 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 		await arrives(w.server.id, STAYER);
 		expect(await actionsOn(here, STAYER.id)).toEqual([
 			['whisper', 1],
-			['whisper', 2],
 			['whisper', 1]
 		]);
 	});
 
 	test('a batch acted on after a later one came in counts up to itself', async () => {
-		const first = await receive(w.server.id, LATE, ago(2000));
-		const second = await receive(w.server.id, LATE, ago(1000));
+		const first = await receive(w.server.id, LATE);
+		const second = await receive(w.server.id, LATE);
 		await onKillsIngested(env, w.server.id, first);
 		await onKillsIngested(env, w.server.id, second);
 		expect(await actionsOn(here, LATE.id)).toEqual([
@@ -347,11 +393,27 @@ describe.skipIf(!hasTestDb)('Team kill limit, live', () => {
 	});
 
 	test('a batch with a counted and a left-out kill by one player acts on the counted one', async () => {
-		const r = await ingestBatch(env, w.server.id, {
-			serverId: randomUUID(),
-			serverName: 'Test',
-			events: [eventOf(MIXER, MATE), eventOf(MIXER, LATE, WIRE)]
-		});
+		const [match] = await env.db
+			.select()
+			.from(matches)
+			.where(and(eq(matches.serverId, w.server.id), isNull(matches.endedAt)))
+			.limit(1);
+		const receivedAt = new Date();
+		const events = [eventOf(MIXER, MATE), eventOf(MIXER, LATE, WIRE)].map((e) => ({
+			...e,
+			mapName: match?.map ?? 'Kavkazi',
+			eventTime: (receivedAt.getTime() - (match?.startedAt ?? openOrigin).getTime()) / 1000
+		}));
+		const r = await ingestBatch(
+			env,
+			w.server.id,
+			{
+				serverId: `boot:${w.server.id}`,
+				serverName: 'Test',
+				events
+			},
+			receivedAt
+		);
 		expect(r.kills.map((k) => k.teamKill)).toEqual([true, true]);
 		await onKillsIngested(env, w.server.id, r.kills);
 		const rows = await env.db

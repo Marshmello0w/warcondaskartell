@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
-import { kills, outbox, triggers } from '$lib/server/db/schema';
+import { feedClocks, kills, outbox, triggers } from '$lib/server/db/schema';
 import { acquireOrRenew, releaseOwnership } from '$lib/server/leadership';
 import { onKillsIngested } from '$lib/server/feed-events';
 import { dryRun } from '$lib/server/triggers';
@@ -19,10 +19,18 @@ const VICTIM = '76561198000000403';
 const UNLUCKY = '76561198000000404';
 const STEADY = '76561198000000405';
 const BURST = '76561198000000406';
+const RATE_CLOCK_ID = newId();
 
 const kill = (killer: string, cause: string, i: number): KillView => ({
 	eventId: newId(),
 	ts: new Date(Date.now() + i).toISOString(),
+	eventAt: new Date(Date.now() + i).toISOString(),
+	packetReceivedAt: new Date().toISOString(),
+	warconReceivedAt: new Date().toISOString(),
+	timeQuality: 'clock',
+	clockId: RATE_CLOCK_ID,
+	historical: false,
+	moderationEligible: true,
 	map: 'Kavkazi',
 	eventTime: i,
 	killer: { steamId: killer, name: `p${killer.slice(-3)}`, faction: null },
@@ -66,6 +74,18 @@ describe.skipIf(!hasTestDb)('Kill rate rule, live', () => {
 	beforeAll(async () => {
 		env = await testEnv();
 		w = await seedWorld(env);
+		const now = new Date();
+		await env.db.insert(feedClocks).values({
+			id: RATE_CLOCK_ID,
+			serverId: w.server.id,
+			instanceId: 'test-boot',
+			sourceId: 'direct',
+			map: 'Kavkazi',
+			firstReceiptAt: now,
+			lastReceiptAt: now,
+			anchorAt: now,
+			maxEventTime: 0
+		});
 		expect(await acquireOrRenew(env, 'kill-rate test')).toBe(true);
 		here = await rule(w.server.id);
 		there = await rule(w.otherServer.id);
@@ -114,11 +134,14 @@ describe.skipIf(!hasTestDb)('Kill rate rule, live', () => {
 		expect((await rowsOf(here)).map((r) => r.target)).toContain(UNLUCKY);
 	});
 
-	test('the dry run spaces a held-back batch out by the match clock', async () => {
+	test('the dry run uses persisted clock-derived event times, including spaced historical kills', async () => {
 		const server = { ...w.server, name: 'one' } as Parameters<typeof dryRun>[1];
 		const received = new Date();
 		const row = (killer: string, eventTime: number) => ({
-			ts: received,
+			ts: new Date(received.getTime() - (1140 - eventTime) * 1000),
+			eventAt: new Date(received.getTime() - (1140 - eventTime) * 1000),
+			timeQuality: 'clock',
+			clockId: 'test-dry-round',
 			serverId: w.server.id,
 			eventId: newId(),
 			instanceId: 'i',
@@ -143,5 +166,20 @@ describe.skipIf(!hasTestDb)('Kill rate rule, live', () => {
 		const who = r.items.map((i) => i.text);
 		expect(who.some((t) => t.includes(BURST))).toBe(true);
 		expect(who.some((t) => t.includes(STEADY))).toBe(false);
+	});
+
+	test('unknown or legacy times cannot trigger live flags or fabricated dry-run flags', async () => {
+		const unknown = kill('76561198000000409', 'Id.Item.AK74M', 0);
+		await onKillsIngested(
+			env,
+			w.server.id,
+			[unknown, unknown, unknown].map((k) => ({
+				...k,
+				eventAt: null,
+				timeQuality: 'ambiguous',
+				moderationEligible: false
+			}))
+		);
+		expect((await rowsOf(here)).some((r) => r.target === unknown.killer!.steamId)).toBe(false);
 	});
 });

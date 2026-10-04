@@ -87,13 +87,7 @@ import {
 } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
 import { NAME_FLAG, nameFilterTargets, nameVerdict, type NameFilterConfig } from './name-filter';
-import {
-	countsForRate,
-	killRateReplay,
-	killTimes,
-	type KillRateConfig,
-	type RateKill
-} from './kill-rate';
+import { countsForRate, killRateReplay, type KillRateConfig, type RateKill } from './kill-rate';
 import {
 	countsForDistance,
 	KILL_DISTANCE_FLAG,
@@ -102,7 +96,6 @@ import {
 	killDistanceReplay,
 	killDistanceSettingsKey,
 	killDistanceVerdict,
-	matchKey,
 	type DistanceKill,
 	type KillDistanceConfig
 } from './kill-distance';
@@ -1882,13 +1875,11 @@ export async function dryRun(
 			       (SELECT COUNT(*) FROM kills k2
 			         WHERE k2.server_id = k.server_id AND k2.killer_steam_id = k.killer_steam_id
 			           AND k2.team_kill AND ${counts(sql`k2.cause`)} AND k2.ts <= k.ts
-			           AND k2.match_row IS NOT DISTINCT FROM k.match_row
-			           AND k2.ts >= COALESCE((SELECT m.started_at - interval '2 minutes' FROM matches m
-			                                    WHERE m.id = k.match_row AND m.server_id = k.server_id),
-			                                 k.ts - interval '1 hour')) END AS n
+			           AND k2.clock_id = k.clock_id AND k2.moderation_eligible
+			           AND k2.warcon_received_at <= k.warcon_received_at) END AS n
 			  FROM kills k
 			 WHERE k.server_id = ${server.id} AND k.team_kill AND k.killer_steam_id IS NOT NULL
-			   AND k.ts >= ${from}
+			   AND k.ts >= ${from} AND k.time_quality = 'clock' AND k.moderation_eligible
 			 ORDER BY k.ts ASC LIMIT ${REPLAY_ROWS_MAX}`);
 		let counted = 0;
 		const left = new Map<string, number>();
@@ -1932,43 +1923,33 @@ export async function dryRun(
 	}
 	if (kind === 'kill_rate') {
 		const c = cfg as KillRateConfig;
-		// Every kill of the window through the live rule's own step, in the order they arrived.
+		// Use the persisted event time and clock identity, exactly as the live path does. Old
+		// receipt-only rows have no reliable reconstruction and must never fabricate a flag.
 		const rows = await env.db.execute<{
 			ts: Date;
-			eventTime: number;
+			clockId: string;
 			steamId: string | null;
 			name: string | null;
 			cause: string | null;
 			headshot: boolean;
 			suicide: boolean;
 		}>(sql`
-			SELECT ts, event_time AS "eventTime", killer_steam_id AS "steamId", killer_name AS name,
+			SELECT event_at AS ts, clock_id AS "clockId", killer_steam_id AS "steamId", killer_name AS name,
 			       cause, headshot, suicide
 			  FROM kills
-			 WHERE server_id = ${server.id} AND ts >= ${from}
-			 ORDER BY ts ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
-		// The kills of one ingest batch share its receipt time: each batch is spaced out by the match
-		// clock as the live rule does it, then the counted ones replayed.
+			 WHERE server_id = ${server.id} AND ts >= ${from} AND time_quality = 'clock'
+			   AND event_at IS NOT NULL AND clock_id IS NOT NULL
+			 ORDER BY event_at ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
 		const counted: RateKill[] = [];
-		for (let i = 0; i < rows.length;) {
-			const received = new Date(rows[i].ts).getTime();
-			let j = i;
-			while (j < rows.length && new Date(rows[j].ts).getTime() === received) j++;
-			const batch = rows.slice(i, j);
-			const times = killTimes(
-				received,
-				batch.map((r) => Number(r.eventTime))
-			);
-			batch.forEach((r, n) => {
-				if (!countsForRate({ killer: r.steamId, suicide: !!r.suicide, cause: r.cause })) return;
-				counted.push({
-					at: times[n],
-					steamId: r.steamId!,
-					name: r.name || r.steamId!,
-					headshot: !!r.headshot
-				});
+		for (const r of rows) {
+			if (!countsForRate({ killer: r.steamId, suicide: !!r.suicide, cause: r.cause })) continue;
+			counted.push({
+				at: new Date(r.ts).getTime(),
+				clockId: r.clockId,
+				steamId: r.steamId!,
+				name: r.name || r.steamId!,
+				headshot: !!r.headshot
 			});
-			i = j;
 		}
 		for (const f of killRateReplay(c, counted))
 			push(new Date(f.at), `flag ${f.name} (${f.steamId}): ${f.verdict}`);
@@ -1982,6 +1963,9 @@ export async function dryRun(
 			);
 		result.notes.push(
 			`${counted.length} kill${counted.length === 1 ? '' : 's'} with hand-held weapons in the window; vehicles, their guns and buildables are not counted.`
+		);
+		result.notes.push(
+			'Only kills with a resolved round clock are replayed. Legacy receipt-only rows and ambiguous rounds are excluded; their stored timestamps are unchanged.'
 		);
 		if (rows.length >= KILL_RATE_REPLAY_MAX)
 			result.notes.push(
@@ -2015,12 +1999,13 @@ export async function dryRun(
 			name: string | null;
 			cause: string | null;
 			distanceM: number | null;
-			matchRow: number | null;
+			clockId: string;
 		}>(sql`
 			SELECT ts, killer_steam_id AS "steamId", killer_name AS name, cause,
-			       distance_m AS "distanceM", match_row AS "matchRow"
+			       distance_m AS "distanceM", clock_id AS "clockId"
 			  FROM kills
 			 WHERE server_id = ${server.id} AND ts >= ${since}
+			   AND time_quality = 'clock' AND clock_id IS NOT NULL
 			   AND killer_steam_id IS NOT NULL AND NOT suicide ${far}
 			   AND lower(cause) IN (SELECT jsonb_array_elements_text(${JSON.stringify(c.causes.map((x) => x.toLowerCase()))}::text::jsonb))
 			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
@@ -2032,7 +2017,7 @@ export async function dryRun(
 			const at = new Date(r.ts).getTime();
 			counted.push({
 				at,
-				match: matchKey(r.matchRow === null ? null : Number(r.matchRow), at),
+				match: `clock:${r.clockId}`,
 				steamId: r.steamId,
 				name: r.name || r.steamId,
 				cause: r.cause,

@@ -479,21 +479,31 @@ export const matches = pgTable(
 
 /**
  * One row per kill the game's feed delivered (`[WDServerFeed]`, see docs/wardogs-api.md), with
- * what Warcon knew at receipt: the open match and both players' factions. History: never pruned;
+ * separate original/Warcon receipts, a resolved clock and factions only for live events. History: never pruned;
  * a TimescaleDB hypertable with compression where the extension exists (migration 0019).
  */
 export const kills = pgTable(
 	'kills',
 	{
-		/** when Warcon received it, a second or two after the kill */
+		/** canonical display/analysis time: clock-derived eventAt, else original packet receipt */
 		ts: ts('ts').notNull(),
+		/** Nullable on untouched legacy rows. */
+		packetReceivedAt: ts('packet_received_at'),
+		warconReceivedAt: ts('warcon_received_at'),
+		sourceReceivedAt: text('source_received_at'),
+		relaySourceId: text('relay_source_id'),
+		eventAt: ts('event_at'),
+		timeQuality: text('time_quality').notNull().default('legacy'),
+		clockId: text('clock_id'),
+		historical: boolean('historical').notNull().default(true),
+		moderationEligible: boolean('moderation_eligible').notNull().default(false),
 		serverId: text('server_id').notNull(),
 		eventId: text('event_id').notNull(),
 		/** the game's serverId: a per-boot instance id, not the join code */
 		instanceId: text('instance_id').notNull(),
 		/** the game's matchId: also per boot, as observed */
 		matchId: text('match_id').notNull(),
-		/** matches.id open on this server at receipt */
+		/** uniquely observed round at original receipt, never the round open at delayed delivery */
 		matchRow: bigint('match_row', { mode: 'number' }),
 		/** seconds on the match clock */
 		eventTime: real('event_time').notNull(),
@@ -517,7 +527,7 @@ export const kills = pgTable(
 		tags: jsonb('tags').notNull()
 	},
 	(t) => [
-		// Not unique: a hypertable's unique indexes must include ts, so dedupe is a lookup (feed.ts).
+		// The permanent unique key lives in the ordinary feed_events ledger, outside this hypertable.
 		index('kills_event_idx').on(t.eventId),
 		index('kills_server_ts_idx').on(t.serverId, t.ts.desc()),
 		index('kills_killer_idx').on(t.killerSteamId, t.ts.desc()),
@@ -525,6 +535,36 @@ export const kills = pgTable(
 	]
 );
 export type KillRow = typeof kills.$inferSelect;
+
+// Regular tables, separate from the kills hypertable: uniqueness must survive late deliveries
+// and process/worker restarts. Neither table expires with a moderation window.
+export const feedEvents = pgTable(
+	'feed_events',
+	{
+		serverId: text('server_id').notNull(),
+		eventId: text('event_id').notNull(),
+		firstReceivedAt: ts('first_received_at').notNull()
+	},
+	(t) => [primaryKey({ columns: [t.serverId, t.eventId] })]
+);
+
+export const feedClocks = pgTable(
+	'feed_clocks',
+	{
+		id: text('id').primaryKey(),
+		serverId: text('server_id').notNull(),
+		instanceId: text('instance_id').notNull(),
+		sourceId: text('source_id').notNull(),
+		map: text('map').notNull(),
+		matchRow: bigint('match_row', { mode: 'number' }),
+		firstReceiptAt: ts('first_receipt_at').notNull(),
+		lastReceiptAt: ts('last_receipt_at').notNull(),
+		endedAt: ts('ended_at'),
+		anchorAt: ts('anchor_at'),
+		maxEventTime: real('max_event_time').notNull()
+	},
+	(t) => [index('feed_clocks_server_idx').on(t.serverId, t.lastReceiptAt)]
+);
 
 /**
  * One row per player per match: the game's own scoreboard counters over the match (kills, deaths,

@@ -4,6 +4,12 @@
 import { causeKind } from './causes';
 import type { KillView } from './types';
 
+/** Canonical UTC order for stored pages and delayed live deliveries. */
+export const newestKillFirst = (a: KillView, b: KillView): number =>
+	Date.parse(b.ts) - Date.parse(a.ts) ||
+	b.eventTime - a.eventTime ||
+	(a.eventId < b.eventId ? 1 : a.eventId > b.eventId ? -1 : 0);
+
 export type KillKind = '' | 'headshot' | 'teamKill' | 'suicide' | 'vehicle' | 'environment';
 
 export interface KillFilter {

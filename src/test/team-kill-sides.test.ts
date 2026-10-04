@@ -39,6 +39,7 @@ describe.skipIf(!hasTestDb)("a player's side, from the worker's look to the kill
 	let m: ServerMemory;
 	let list: ReturnType<typeof on>[] = [];
 	let spy: ReturnType<typeof spyOn>;
+	const bootStartedAt = Date.now() - 100_000;
 
 	/** What the sessions table holds as the player's side, the web's only view of it. */
 	const sideOf = async (steamId: string) =>
@@ -82,13 +83,13 @@ describe.skipIf(!hasTestDb)("a player's side, from the worker's look to the kill
 	/** A kill arriving through the feed now: was it taken for a team kill? */
 	const kill = async (killer: string, victim: string) => {
 		const r = await ingestBatch(env, w.server.id, {
-			serverId: randomUUID(),
+			serverId: `boot:${w.server.id}`,
 			serverName: 'Test',
 			events: [
 				{
 					eventId: randomUUID(),
 					type: 'killed',
-					eventTime: 100,
+					eventTime: (Date.now() - bootStartedAt) / 1000,
 					matchId: randomUUID(),
 					mapName: 'Kavkazi',
 					killerName: `p${killer.slice(-3)}`,

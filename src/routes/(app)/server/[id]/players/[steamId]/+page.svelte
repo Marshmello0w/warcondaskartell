@@ -11,6 +11,7 @@
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import CareerPanel from '$lib/components/CareerPanel.svelte';
 	import CombatSummary from '$lib/components/CombatSummary.svelte';
+	import KillTime from '$lib/components/KillTime.svelte';
 	import { describeSync, STATE_TONE } from '$lib/lists';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort } from '$lib/table.svelte';
@@ -335,7 +336,7 @@
 								{#each d.combat.recent as k (k.eventId)}
 									<tr class={k.teamKill ? 'text-warn' : ''}>
 										<td class="whitespace-nowrap text-mist-400" title={fmtTime(k.ts)}
-											>{clock(k.ts)}</td
+											><KillTime kill={k} text={clock(k.ts)} /></td
 										>
 										<td>{k.serverName}</td>
 										<td class={k.killer?.steamId === d.steamId ? 'font-semibold' : ''}

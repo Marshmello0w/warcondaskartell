@@ -22,7 +22,10 @@ export const GET = route(async (event) => {
 	const eventTime = rawTime !== null && rawTime !== '' ? Number(rawTime) : null;
 	if (eventTime !== null && !Number.isFinite(eventTime))
 		throw new ApiError(400, 'beforeTime must be a number.');
-	const before = ts ? { ts, eventTime } : null;
+	const eventId = event.url.searchParams.get('beforeId');
+	if (eventId && eventId.length > 64)
+		throw new ApiError(400, 'beforeId must be an event id of at most 64 characters.');
+	const before = ts ? { ts, eventTime, eventId } : null;
 	const limit = int(event.url.searchParams.get('limit'), 50, 1, 200);
 	const filter = parseKillFilter(event.url.searchParams);
 	const rawMatch = event.url.searchParams.get('match');

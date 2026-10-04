@@ -155,8 +155,17 @@ export interface LiveView {
 /** One kill as the game's feed reported it and Warcon stored it (kills table). */
 export interface KillView {
 	eventId: string;
-	/** when Warcon received it */
+	/** clock-derived kill time, or original packet receipt when the kill time is unknown */
 	ts: string;
+	eventAt?: string | null;
+	packetReceivedAt?: string | null;
+	warconReceivedAt?: string | null;
+	sourceReceivedAt?: string | null;
+	timeQuality?: string;
+	clockId?: string | null;
+	matchRow?: number | null;
+	historical?: boolean;
+	moderationEligible?: boolean;
 	map: string;
 	/** seconds on the match clock */
 	eventTime: number;

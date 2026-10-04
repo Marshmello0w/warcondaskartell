@@ -28,12 +28,15 @@ export const GET = route(async (event) => {
 	if (eventTime !== null && !Number.isFinite(eventTime))
 		throw new ApiError(400, 'beforeTime must be a number.');
 	const limit = int(event.url.searchParams.get('limit'), MATCH_KILLS_PAGE, 1, 200);
+	const eventId = event.url.searchParams.get('beforeId');
+	if (eventId && eventId.length > 64)
+		throw new ApiError(400, 'beforeId must be an event id of at most 64 characters.');
 	const window = await matchWindow(env, ps.server.id, id);
 	const kills = window
 		? await recentKills(
 				env,
 				ps.server.id,
-				ts ? { ts, eventTime } : null,
+				ts ? { ts, eventTime, eventId } : null,
 				limit,
 				EMPTY_FILTER,
 				window

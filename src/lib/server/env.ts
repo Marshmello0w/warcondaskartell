@@ -10,6 +10,7 @@ import {
 	type SqlClient
 } from './db';
 import { authSecretProblem, relaySecretProblem } from './crypto';
+import { parseFeedRelays } from './feed-time';
 
 export interface Env {
 	db: Db;
@@ -55,6 +56,8 @@ export interface Env {
 	POLL_CONCURRENCY?: string;
 	/** Bearer for GET /metrics (Prometheus) on the web and worker processes; the endpoint is off when unset. */
 	METRICS_TOKEN?: string;
+	/** Explicitly trusted external feed relays (JSON id/serverId/token entries). */
+	FEED_RELAY_SOURCES?: string;
 }
 
 export type Role = 'all' | 'web' | 'worker';
@@ -150,6 +153,7 @@ function databaseTarget(): string | Bun.SQL.PostgresOrMySQLOptions {
 export async function initEnv(opts: { role?: Role } = {}): Promise<Env> {
 	const role = opts.role ?? parseRole(processEnv.WARCON_ROLE);
 	const origin = parseOrigin(processEnv.ORIGIN);
+	parseFeedRelays(processEnv.FEED_RELAY_SOURCES);
 	// Refuse the .env.example placeholder (or a short secret) before touching the database.
 	const secretProblem = authSecretProblem(processEnv.BETTER_AUTH_SECRET);
 	if (secretProblem) throw new Error(secretProblem);
@@ -192,6 +196,7 @@ export async function initEnv(opts: { role?: Role } = {}): Promise<Env> {
 		ALLOW_ORG_SIGNUP: processEnv.ALLOW_ORG_SIGNUP,
 		MAX_ORGS_PER_USER: processEnv.MAX_ORGS_PER_USER,
 		METRICS_TOKEN: processEnv.METRICS_TOKEN,
+		FEED_RELAY_SOURCES: processEnv.FEED_RELAY_SOURCES,
 		MAX_SERVERS_PER_ORG: processEnv.MAX_SERVERS_PER_ORG,
 		TURNSTILE_SITE_KEY: processEnv.TURNSTILE_SITE_KEY,
 		TURNSTILE_SECRET_KEY: processEnv.TURNSTILE_SECRET_KEY,

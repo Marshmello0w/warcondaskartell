@@ -9,6 +9,7 @@
 	import { fmtAgo, fmtDuration, fmtNum, mapName, prettify, expSetLabel } from '$lib/format';
 	import { scoreCapOf } from '$lib/match';
 	import { causeLabel } from '$lib/causes';
+	import KillTime from '$lib/components/KillTime.svelte';
 	import { toast } from '$lib/toast.svelte';
 	import MapArt from '$lib/components/MapArt.svelte';
 	import Pulse from '$lib/components/Pulse.svelte';
@@ -293,7 +294,9 @@
 							<td class="num text-mist-400"
 								>{k.distanceM === null ? '—' : `${Math.round(k.distanceM)} m`}</td
 							>
-							<td class="whitespace-nowrap text-mist-400">{fmtAgo(k.ts, now)}</td>
+							<td class="whitespace-nowrap text-mist-400"
+								><KillTime kill={k} text={fmtAgo(k.ts, now)} /></td
+							>
 						</tr>
 					{:else}
 						<tr><td colspan="5" class="py-4 text-center text-mist-600">No kills yet.</td></tr>

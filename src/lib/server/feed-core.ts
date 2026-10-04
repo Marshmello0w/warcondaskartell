@@ -74,7 +74,14 @@ export function parseKill(e: unknown): ParsedKill | null {
 	const eventId = str(o.eventId, 64);
 	const victimSteamId = str(o.victimSteamId, 17);
 	const eventTime = num(o.eventTime);
-	if (!eventId || !STEAM_RE.test(victimSteamId) || eventTime === null) return null;
+	if (
+		!eventId ||
+		!STEAM_RE.test(victimSteamId) ||
+		eventTime === null ||
+		eventTime < 0 ||
+		eventTime > 7 * 86400
+	)
+		return null;
 	const killerSteamId = str(o.killerSteamId, 17);
 	const tags = shortTags(o.contextTags);
 	const headshot = tags.includes('Headshot');

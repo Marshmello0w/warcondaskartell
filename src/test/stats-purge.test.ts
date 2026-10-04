@@ -5,6 +5,8 @@ import { and, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import {
 	auditLog,
+	feedClocks,
+	feedEvents,
 	kills,
 	matches,
 	matchPlayers,
@@ -15,6 +17,7 @@ import { hasTestDb, testEnv } from './db';
 import { callApi, stubGateway } from './call';
 import { seedWorld, type World } from './world';
 import { POST as purge } from '../routes/api/servers/[id]/stats/purge/+server';
+import { ingestBatch } from '$lib/server/feed';
 
 const A = '76561198000000091';
 
@@ -33,6 +36,17 @@ describe.skipIf(!hasTestDb)('stats purge', () => {
 			.from(servers)
 			.where(eq(servers.id, w.server.id));
 		for (const serverId of [w.server.id, w.otherServer.id]) {
+			await env.db.insert(feedClocks).values({
+				id: `clock:${serverId}`,
+				serverId,
+				instanceId: 'i',
+				sourceId: 'direct',
+				map: 'Europe',
+				anchorAt: t,
+				firstReceiptAt: t,
+				lastReceiptAt: t,
+				maxEventTime: 1
+			});
 			const [m] = await env.db
 				.insert(matches)
 				.values({ serverId, startedAt: t, endedAt: new Date(), map: 'Europe' })
@@ -95,6 +109,29 @@ describe.skipIf(!hasTestDb)('stats purge', () => {
 		});
 		expect(await count(w.server.id)).toEqual({ kills: 0, matches: 0, lines: 0, sessions: 1 });
 		expect(await count(w.otherServer.id)).toEqual({ kills: 1, matches: 1, lines: 1, sessions: 1 });
+		expect(
+			await env.db.select().from(feedClocks).where(eq(feedClocks.serverId, w.server.id))
+		).toHaveLength(0);
+		expect(
+			await env.db.select().from(feedClocks).where(eq(feedClocks.serverId, w.otherServer.id))
+		).toHaveLength(1);
+		expect(
+			await env.db.select().from(feedEvents).where(eq(feedEvents.serverId, w.server.id))
+		).toHaveLength(1);
+		const retry = await ingestBatch(env, w.server.id, {
+			serverId: 'i',
+			events: [
+				{
+					eventId: `p-${w.server.id}`,
+					type: 'killed',
+					eventTime: 1,
+					mapName: 'Europe',
+					victimSteamId: '76561198000000092'
+				}
+			]
+		});
+		expect([retry.accepted, retry.duplicates]).toEqual([0, 1]);
+		expect((await count(w.server.id)).kills).toBe(0);
 		const rows = await env.db
 			.select()
 			.from(auditLog)

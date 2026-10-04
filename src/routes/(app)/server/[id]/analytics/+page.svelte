@@ -482,6 +482,10 @@
 				>
 			</div>
 			<div class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+				{#if a.combat.unresolvedTimes}<p class="col-span-full text-[12px] text-mist-400">
+						{fmtNum(a.combat.unresolvedTimes)} kill records have unknown event times and are excluded
+						from these timed statistics. They remain in the kill history.
+					</p>{/if}
 				{#each [['Kills', fmtNum(a.combat.kills)], ['Headshots', `${fmtNum(a.combat.headshots)} · ${pct(a.combat.headshots, a.combat.kills)}`], ['Team kills', fmtNum(a.combat.teamKills)], ['Suicides', fmtNum(a.combat.suicides)], ['By vehicle', fmtNum(a.combat.vehicleKills)]] as [label, value] (label)}
 					<div class="rounded-ctl border border-black bg-ink-950 px-3.5 py-3">
 						<div class="caps text-mist-400">{label}</div>

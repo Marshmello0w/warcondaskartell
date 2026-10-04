@@ -32,7 +32,8 @@
 				'GET',
 				`/api/public/servers/${encodeURIComponent(data.heading.id)}/matches/${view.match.id}${qs({
 					before: last.ts,
-					beforeTime: last.eventTime
+					beforeTime: last.eventTime,
+					beforeId: last.eventId
 				})}`
 			);
 			extra = [...extra, ...r.feed];
