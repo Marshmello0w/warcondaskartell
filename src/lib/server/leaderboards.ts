@@ -1,13 +1,14 @@
 // Leaderboards and careers, read at page load from what the worker writes: each player's line
 // of every match (match_players: the game's own kills and deaths, the feed's headshots, team
 // kills, suicides, vehicle kills and streaks, time on and the side played) joined to its match
-// for the result, and the sessions for playtime, seed time, the last name and cash.
-// Nothing is precomputed; a page of a board is kept for a minute (loadBoard). The queries ride
-// the existing indexes: matches (server_id, started_at), match_players (match_id, steam_id) and
-// (steam_id, match_id), player_sessions (server_id, last_seen) and (steam_id, joined_at). Only
-// matches that have ended count, and a match is in a range by when it ended; the match in
-// progress is on the live page. The result of a match for a player (win, loss, draw, none) is the
-// rule in $lib/leaderboard, written out again in SQL below for the aggregates.
+// for the result, and the sessions for playtime, seed time, the last name and cash. All time is
+// read from each player's settled totals per server (player_totals, kept by the database as
+// sessions close and matches end, migration 0038) plus the open sessions; a range (7, 30, 90
+// days) sums the sources in it. A page of a board is kept for a minute (loadBoard). Only matches
+// that have ended count, and a match is in a range by when it ended; the match in progress is on
+// the live page. The result of a match for a player (win, loss, draw, none) is the rule in
+// $lib/leaderboard, written out again in SQL below for the aggregates (and once more, as
+// match_result(), in the migration).
 import { sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { servers } from './db/schema';
@@ -171,13 +172,10 @@ export async function riskPerformanceFor(
 			kills: string;
 			deaths: string;
 		}>(sql`
-			WITH ${lines(serverIds, EPOCH, steamIds)}
-			SELECT steam_id AS "steamId", COUNT(*) AS matches,
-			       COUNT(*) FILTER (WHERE result = 'win') AS wins,
-			       COUNT(*) FILTER (WHERE result = 'loss') AS losses,
-			       COUNT(*) FILTER (WHERE result = 'draw') AS draws,
-			       SUM(kills) AS kills, SUM(deaths) AS deaths
-			  FROM lines GROUP BY steam_id`)
+			SELECT steam_id AS "steamId", SUM(matches) AS matches, SUM(wins) AS wins,
+			       SUM(losses) AS losses, SUM(draws) AS draws, SUM(kills) AS kills, SUM(deaths) AS deaths
+			  FROM player_totals WHERE server_id IN ${serverIds} AND steam_id IN ${steamIds}
+			 GROUP BY steam_id HAVING SUM(matches) > 0`)
 	]);
 	const of = (steamId: string) => {
 		let value = result.get(steamId);
@@ -262,10 +260,10 @@ async function boardSlice(
 	limit: number,
 	offset: number
 ): Promise<BaseRow[]> {
-	const from = rangeStart(q.range) ?? EPOCH;
+	const from = rangeStart(q.range);
 	const order = q.dir === 'asc' ? sql`ASC NULLS LAST` : sql`DESC NULLS LAST`;
 	return (await env.db.execute<BaseRow>(sql`
-		WITH ${base(ids, from)},
+		WITH ${from ? base(ids, from) : totalsBase(ids)},
 		page AS (
 			SELECT *, COUNT(*) OVER () AS total FROM base
 			 WHERE minutes >= ${q.minMinutes}
@@ -389,7 +387,7 @@ export async function playerStats(
 		losses: string;
 		draws: string;
 	}>(sql`
-		WITH ${base(ids, EPOCH, steamIds)}
+		WITH ${totalsBase(ids, steamIds)}
 		SELECT steam_id AS "steamId", minutes, seed_minutes AS "seedMinutes", kills, deaths,
 		       matches, wins, losses, draws
 		  FROM base`);
@@ -423,7 +421,7 @@ export async function lastNameOf(env: Env, ids: string[], steamId: string): Prom
 export async function rankOf(env: Env, ids: string[], steamId: string): Promise<number | null> {
 	if (!ids.length) return null;
 	const [row] = await env.db.execute<{ qualifies: boolean | null; above: string }>(sql`
-		WITH ${base(ids, EPOCH)},
+		WITH ${totalsBase(ids)},
 		me AS (SELECT kills, minutes FROM base WHERE steam_id = ${steamId})
 		SELECT (SELECT minutes >= ${DEFAULT_FLOOR_MINUTES} FROM me) AS qualifies,
 		       (SELECT COUNT(*) FROM base, me WHERE base.minutes >= ${DEFAULT_FLOOR_MINUTES} AND base.kills > me.kills) AS above`);
