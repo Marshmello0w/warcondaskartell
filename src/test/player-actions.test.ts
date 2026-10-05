@@ -131,6 +131,10 @@ describe.skipIf(!hasTestDb)('Kick, Kill and Move apart', () => {
 				const refused = await save();
 				expect([kind, path, refused.status]).toEqual([kind, path, 403]);
 				await holds(['automation.manage', cap]);
+				if (kind === 'clan_teams') {
+					expect((await save()).status).toBe(403);
+					await holds(['automation.manage', cap, 'chat.send']);
+				}
 				// past the check: whatever the rule's own settings then make of the request
 				const allowed = await save();
 				expect([kind, path, allowed.status === 403]).toEqual([kind, path, false]);

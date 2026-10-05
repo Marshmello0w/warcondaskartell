@@ -197,7 +197,13 @@ export interface TwoTeamsStep {
 	/** players to move now, and where */
 	moves: { steamId: string; name: string; from: string; to: string; why: TwoTeamsReason }[];
 	/** moved players now on their side and not told yet */
-	whispers: { steamId: string; name: string; faction: string }[];
+	whispers: {
+		steamId: string;
+		name: string;
+		faction: string;
+		/** Clan teams: the confirmed placement both recipients are told about. */
+		clan?: { tag: string; movedSteamId: string; movedName: string };
+	}[];
 	/** players the rule has just stopped moving for being asked too often */
 	stopped: { steamId: string; name: string; faction: string }[];
 }

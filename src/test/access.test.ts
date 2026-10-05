@@ -541,7 +541,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 					const body = { kind, config };
 					const refused = await api(w, 'viewer', route, { params, body });
 					expect([kind, route, refused.status]).toEqual([kind, route, 403]);
-					await holds([cap]);
+					await holds([cap, ...(kind === 'clan_teams' ? ['chat.send'] : [])]);
 					// Past the check: whatever the rule's own settings then make of the request.
 					expect((await api(w, 'viewer', route, { params, body })).status).not.toBe(403);
 					await holds([]);

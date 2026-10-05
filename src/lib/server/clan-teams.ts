@@ -23,7 +23,7 @@ export const validateClanTeams = (c: Record<string, unknown>): ClanTeamsConfig =
 	watchOnly: c.watchOnly === true
 });
 export const clanTeamsSettingsKey = (c: ClanTeamsConfig): string => settingsFingerprint(c);
-/** Delivery uses the same move pipeline; clan grouping never whispers or balances. */
+/** Delivery uses the same move pipeline; clan grouping never balances. */
 export const clanTeamsMoveConfig = (c: ClanTeamsConfig): TwoTeamsConfig => ({
 	closedFaction: '',
 	names: {},
@@ -33,6 +33,10 @@ export const clanTeamsMoveConfig = (c: ClanTeamsConfig): TwoTeamsConfig => ({
 interface ClanTeamsState extends TwoTeamsState {
 	clanSides: Map<string, string>;
 	clanMembers: Map<string, string>;
+	/** Whoever established the side, independent of later roster ordering. */
+	clanLeaders: Map<string, string>;
+	/** One notice per placement, retained across failed attempts and brief faction-less looks. */
+	clanNotices: Map<string, { tag: string; faction: string; leader: string | null }>;
 }
 type Member = { steamId: string; name: string; faction: string | null };
 
@@ -59,11 +63,15 @@ export function clanTeamsStep(
 		openSince: new Map(previous.openSince),
 		would: new Map(previous.would),
 		clanSides: new Map(old.clanSides),
-		clanMembers: new Map()
+		clanMembers: new Map(),
+		clanLeaders: new Map(old.clanLeaders),
+		clanNotices: new Map(old.clanNotices)
 	};
 	const result: TwoTeamsStep = { state, moves: [], whispers: [], stopped: [] };
 	if (look.newMatch) {
 		state.clanSides.clear();
+		state.clanLeaders.clear();
+		state.clanNotices.clear();
 		state.moving.clear();
 		state.openSince.clear();
 		state.would.clear();
@@ -99,7 +107,51 @@ export function clanTeamsStep(
 		if (group.length === 1) {
 			state.would.delete(first.steamId);
 			state.clanSides.set(tag, first.faction!);
-		} else if (!state.clanSides.has(tag)) state.clanSides.set(tag, sideOf(first)!);
+			state.clanLeaders.set(tag, first.steamId);
+		} else if (!state.clanSides.has(tag)) {
+			state.clanSides.set(tag, sideOf(first)!);
+			state.clanLeaders.set(tag, first.steamId);
+		}
+	}
+	for (const [tag, id] of state.clanLeaders)
+		if (!state.clanSides.has(tag) || state.clanMembers.get(id) !== tag)
+			state.clanLeaders.delete(tag);
+	// When the first member leaves, an existing clanmate on the established side can receive
+	// later arrivals' notices. The side itself remains unchanged.
+	for (const [tag, group] of groups) {
+		if (state.clanLeaders.has(tag)) continue;
+		const leader = group.find((p) => p.faction === state.clanSides.get(tag));
+		if (leader) state.clanLeaders.set(tag, leader.steamId);
+	}
+	for (const [id, notice] of state.clanNotices) {
+		const p = listed.get(id);
+		if (
+			cfg.watchOnly ||
+			!p ||
+			state.clanMembers.get(id) !== notice.tag ||
+			(groups.get(notice.tag)?.length ?? 0) < 2 ||
+			state.clanSides.get(notice.tag) !== notice.faction
+		) {
+			state.clanNotices.delete(id);
+			continue;
+		}
+		if (p.faction !== notice.faction) continue;
+		const clan = { tag: notice.tag, movedSteamId: id, movedName: p.name };
+		result.whispers.push({ steamId: id, name: p.name, faction: notice.faction, clan });
+		const leader = notice.leader ? listed.get(notice.leader) : undefined;
+		if (
+			leader &&
+			leader.steamId !== id &&
+			state.clanMembers.get(leader.steamId) === notice.tag &&
+			leader.faction === notice.faction
+		)
+			result.whispers.push({
+				steamId: leader.steamId,
+				name: leader.name,
+				faction: notice.faction,
+				clan
+			});
+		state.clanNotices.delete(id);
 	}
 	for (const [id, move] of state.moving) {
 		const p = listed.get(id);
@@ -179,6 +231,12 @@ export function clanTeamsStep(
 		else {
 			state.moving.set(p.steamId, { from: p.faction!, to: target, at: now, seq: look.seq ?? 0 });
 			state.asked.set(p.steamId, [...(state.asked.get(p.steamId) ?? []), now]);
+			if (!state.clanNotices.has(p.steamId))
+				state.clanNotices.set(p.steamId, {
+					tag: state.clanMembers.get(p.steamId)!,
+					faction: target,
+					leader: state.clanLeaders.get(state.clanMembers.get(p.steamId)!) ?? null
+				});
 		}
 	}
 	return result;

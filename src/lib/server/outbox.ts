@@ -23,6 +23,7 @@ import {
 	SETTINGS_KEYS,
 	isTeamMoveRule,
 	twoTeamsMoveVerdict,
+	twoTeamsWhisperVerdict,
 	type Intent,
 	type TriggerUpdate
 } from './triggers';
@@ -312,6 +313,22 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 		const verdict = twoTeamsMoveVerdict(row);
 		if (verdict !== 'send' && verdict !== 'wait') return verdict;
 	}
+	if (row.triggerKind === 'clan_teams' && row.action === 'whisper') {
+		const placement = (
+			row.params as {
+				clanPlacement?: { steamId: string; tag: string; faction: string };
+			} | null
+		)?.clanPlacement;
+		if (placement) {
+			for (const id of [row.steamId, placement.steamId]) {
+				const p = m.players.find((q) => q.steamId === id);
+				if (!p || clanTag(p.name) !== placement.tag || p.faction !== placement.faction)
+					return 'Clan placement changed before the whisper.';
+			}
+			const verdict = twoTeamsWhisperVerdict(row);
+			if (verdict !== 'send' && verdict !== 'wait') return verdict;
+		}
+	}
 	return null;
 }
 
@@ -329,7 +346,10 @@ function mustWait(row: OutboxRow, m: ReturnType<typeof memoryOf>): boolean {
 		// a Team balance move whose deciding look is not written yet here
 		(isTeamMoveRule(row.triggerKind) &&
 			row.action === 'changeTeam' &&
-			twoTeamsMoveVerdict(row) === 'wait')
+			twoTeamsMoveVerdict(row) === 'wait') ||
+		(row.triggerKind === 'clan_teams' &&
+			row.action === 'whisper' &&
+			twoTeamsWhisperVerdict(row) === 'wait')
 	);
 }
 

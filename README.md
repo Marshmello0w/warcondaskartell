@@ -567,8 +567,13 @@ after an outage forget this assignment.
 The player list refreshes at least every five seconds on an online server, even without a browser
 open, subject to the game's rate limit. Moves use the game's team change without an additional kill and are paced in small
 batches, retrying after 15 seconds, with ten attempts in a rolling ten-minute window and a reset
-after 30 seconds observed on the clan's side. Watch only records planned moves under Actions
-without sending them. Creating, enabling or dry-running the rule needs _Automation_ and _Move_.
+after 30 seconds observed on the clan's side. Once a placement is confirmed, the moved player
+receives an English whisper naming their clan tag and destination team. The member who established
+the clan's side receives a whisper naming the player who joined them; if that member has left,
+an existing clanmate on that side receives notices for later moves. Failed attempts send no
+whispers, and each confirmed placement is announced once. Watch only records planned moves under
+Actions without sending moves or whispers. Creating, enabling or dry-running the rule needs
+_Automation_, _Move_ and _Chat_.
 One Clan teams rule per server; Clan teams and Team balance cannot be enabled together because
 they could undo each other's moves. The API kind is `clan_teams`, with
 `config: { "watchOnly": false }`. No database migration is needed for this kind.

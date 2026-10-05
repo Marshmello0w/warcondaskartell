@@ -240,6 +240,7 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
  * a Kill distance rule's kill with its whisper.
  */
 function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
+	if (kind === 'clan_teams') return ['chat.send', 'whispers players'];
 	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
 	if (kind === 'two_teams' && str((config as Partial<TwoTeamsConfig> | null)?.message))
 		return ['chat.send', 'whispers players'];
@@ -1159,14 +1160,28 @@ export function twoTeamsMoveVerdict(row: {
 	const p = row.params as { mem?: unknown; seq?: unknown; at?: unknown } | null;
 	if (typeof p?.mem !== 'string' || typeof p.seq !== 'number' || !row.triggerId || !row.steamId)
 		return 'send';
+	const verdict = twoTeamsWhisperVerdict(row);
+	if (verdict !== 'send') return verdict;
+	const memory = twoTeamsMemory.get(row.triggerId);
+	if (!memory) return 'wait';
+	const staff = staffMoves.get(row.serverId)?.get(row.steamId);
+	if (staff && typeof p.at === 'number' && staff.at >= p.at) return 'Moved by hand since.';
+	if (memory.state.moving.get(row.steamId)?.seq !== p.seq) return 'No longer wanted by the rule.';
+	return 'send';
+}
+
+/** A confirmed clan placement's whisper must still belong to a committed look of this match. */
+export function twoTeamsWhisperVerdict(row: {
+	triggerId: string | null;
+	params: unknown;
+}): 'send' | 'wait' | string {
+	const p = row.params as { mem?: unknown; seq?: unknown } | null;
+	if (typeof p?.mem !== 'string' || typeof p.seq !== 'number' || !row.triggerId) return 'send';
 	const memory = twoTeamsMemory.get(row.triggerId);
 	if (!memory) return 'wait';
 	if (memory.id !== p.mem) return 'No longer wanted by the rule.';
 	if (memory.committedSeq < p.seq) return 'wait';
 	if (p.seq < memory.boundarySeq) return 'A new match began.';
-	const staff = staffMoves.get(row.serverId)?.get(row.steamId);
-	if (staff && typeof p.at === 'number' && staff.at >= p.at) return 'Moved by hand since.';
-	if (memory.state.moving.get(row.steamId)?.seq !== p.seq) return 'No longer wanted by the rule.';
 	return 'send';
 }
 
@@ -1289,30 +1304,50 @@ async function evalTwoTeams(
 			params: {
 				steamId: w.steamId,
 				rule: config,
-				message: renderTemplate(
-					cfg.message,
-					vars(
-						ctx,
-						ctx.players.find((p) => p.steamId === w.steamId) ?? {
-							name: w.name,
-							steamId: w.steamId,
-							faction: w.faction,
-							kills: 0,
-							deaths: 0,
-							cash: 0,
-							ping: null
-						},
-						statsOf(stats, w.steamId),
-						{ team: teamName(cfg, w.faction) }
-					),
-					MAX_CHAT
-				)
+				...(w.clan
+					? {
+							mem: kept.id,
+							seq,
+							on: (row.state as { enabledAt?: number } | null)?.enabledAt ?? null,
+							clanPlacement: {
+								steamId: w.clan.movedSteamId,
+								tag: w.clan.tag,
+								faction: w.faction
+							}
+						}
+					: {}),
+				message: w.clan
+					? str(
+							(w.steamId === w.clan.movedSteamId
+								? `You were moved to ${teamName(cfg, w.faction)} to join your clan [${w.clan.tag}].`
+								: `${w.clan.movedName.slice(0, 100)} was moved to your team (${teamName(cfg, w.faction)}) because you share the clan tag [${w.clan.tag}].`
+							).replace(/[\r\n]/g, ' '),
+							MAX_CHAT
+						)
+					: renderTemplate(
+							cfg.message,
+							vars(
+								ctx,
+								ctx.players.find((p) => p.steamId === w.steamId) ?? {
+									name: w.name,
+									steamId: w.steamId,
+									faction: w.faction,
+									kills: 0,
+									deaths: 0,
+									cash: 0,
+									ping: null
+								},
+								statsOf(stats, w.steamId),
+								{ team: teamName(cfg, w.faction) }
+							),
+							MAX_CHAT
+						)
 			},
 			target: w.steamId,
 			okMessage: `Whispered ${w.name}.`,
-			detail: { name: w.name, team: teamName(cfg, w.faction) },
+			detail: { name: w.name, team: teamName(cfg, w.faction), ...(w.clan ? { clan: w.clan } : {}) },
 			steamId: w.steamId,
-			dedupeKey: key(row, w.steamId, 'told', kept.id, seq)
+			dedupeKey: key(row, w.steamId, 'told', kept.id, seq, ...(w.clan ? [w.clan.movedSteamId] : []))
 		});
 	const n = step.moves.length;
 	const verb = cfg.watchOnly ? 'Would move' : 'Moving';

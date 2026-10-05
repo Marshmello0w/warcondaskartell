@@ -144,4 +144,61 @@ describe('Clan teams without team balance', () => {
 		expect(first.state.asked.size).toBe(0);
 		expect(step(first.state, players, 1000, 6, true).moves).toEqual([]);
 	});
+	test('only a confirmed landing notifies both players, keeping the original leader across retries and reorderings', () => {
+		const first = step(emptyTwoTeamsState(), [p('a', R)]);
+		const move = step(first.state, [p('b', G), p('a', R)], 1000);
+		const retry = step(move.state, [p('b', G), p('a', R)], 16_000);
+		expect(move.whispers).toEqual([]);
+		expect(retry.whispers).toEqual([]);
+		const landed = step(retry.state, [p('b', R), p('a', R)], 21_000);
+		expect(landed.whispers).toEqual([
+			{
+				steamId: 'b',
+				name: '[ichbins] b',
+				faction: R,
+				clan: { tag: 'ichbins', movedSteamId: 'b', movedName: '[ichbins] b' }
+			},
+			{
+				steamId: 'a',
+				name: '[ichbins] a',
+				faction: R,
+				clan: { tag: 'ichbins', movedSteamId: 'b', movedName: '[ichbins] b' }
+			}
+		]);
+		expect(step(landed.state, [p('b', R), p('a', R)], 26_000).whispers).toEqual([]);
+		// A later switch is a new placement, not a retry of the old one.
+		const switched = step(landed.state, [p('b', G), p('a', R)], 31_000);
+		expect(step(switched.state, [p('b', R), p('a', R)], 36_000).whispers).toHaveLength(2);
+		expect(step(move.state, [p('b', R), p('a', R)], 6000).whispers).toHaveLength(2);
+	});
+	test('a temporary faction-less roster keeps the notice but a rename or match boundary cancels it', () => {
+		const first = step(emptyTwoTeamsState(), [p('a', R), p('b', G)]);
+		const menu = step(first.state, [p('a', R), p('b', null)], 5000);
+		expect(step(menu.state, [p('a', R), p('b', R)], 10_000).whispers).toHaveLength(2);
+		const renamed = step(first.state, [p('a', R), p('b', R, '[other] B')], 5000);
+		expect(renamed.whispers).toEqual([]);
+		expect(
+			clanTeamsStep(cfg, first.state, [p('a', R), p('b', R)], factions, 5000, 6, { newMatch: true })
+				.whispers
+		).toEqual([]);
+	});
+	test('no notice goes to an absent, renamed or differently placed leader', () => {
+		const first = step(emptyTwoTeamsState(), [p('a', R), p('b', R), p('c', G)]);
+		for (const leader of [null, p('a', R, '[other] A'), p('a', G)]) {
+			const result = step(first.state, [...(leader ? [leader] : []), p('b', R), p('c', R)], 5000);
+			expect(result.whispers.map((w) => w.steamId)).toEqual(['c']);
+		}
+		const departed = step(first.state, [p('b', R), p('c', G)], 5000);
+		const later = step(departed.state, [p('b', R), p('c', G), p('d', B)], 10_000);
+		expect(
+			step(later.state, [p('b', R), p('c', G), p('d', R)], 15_000).whispers.map((w) => w.steamId)
+		).toEqual(['d', 'b']);
+	});
+	test('existing clanmates and watch-only landings are never announced', () => {
+		expect(step(emptyTwoTeamsState(), [p('a', R), p('b', R)]).whispers).toEqual([]);
+		const watched = step(emptyTwoTeamsState(), [p('a', R), p('b', G)], 0, 6, true);
+		expect(step(watched.state, [p('a', R), p('b', R)], 5000, 6, true).whispers).toEqual([]);
+		const first = step(emptyTwoTeamsState(), [p('a', R), p('b', G)]);
+		expect(step(first.state, [p('b', R)], 5000).whispers).toEqual([]);
+	});
 });

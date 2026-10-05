@@ -50,6 +50,7 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 	let spy: ReturnType<typeof spyOn>;
 	let renewing: ReturnType<typeof setInterval>;
 	const requests: string[] = [];
+	const messages: { path: string; message: string }[] = [];
 	/** the server's Two-team rule, closing Lonestar, whose moves these rows are */
 	let ruleId: string;
 
@@ -76,8 +77,9 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		spy = spyOn(WardogsClient, 'forServer').mockImplementation(
 			async () =>
 				({
-					json: async (method: string, path: string) => {
+					json: async (method: string, path: string, body?: { message?: string }) => {
 						requests.push(`${method} ${path}`);
+						if (path.endsWith('/message')) messages.push({ path, message: body?.message ?? '' });
 						return { ok: true };
 					}
 				}) as unknown as WardogsClient
@@ -205,6 +207,139 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		invalidateTriggers(w.server.id);
 		forgetRuleMemory();
 		requests.length = 0;
+	}, 30_000);
+
+	test('confirmed clan moves whisper both players once; changed tags, teams, departures and a new match cancel stale notices', async () => {
+		await stopDelivery();
+		forgetRuleMemory();
+		const [rule] = await env.db
+			.insert(triggers)
+			.values({
+				id: `clan-whispers-${w.server.id}`,
+				serverId: w.server.id,
+				orgId: w.org.id,
+				kind: 'clan_teams',
+				name: 'Clan whispers',
+				enabled: true,
+				config: validateClanTeams({})
+			})
+			.returning();
+		const A = '76561198000000980',
+			B = '76561198000000981',
+			C = '76561198000000982',
+			D = '76561198000000983',
+			E = '76561198000000984',
+			F = '76561198000000985';
+		const clanPlayer = (id: string, side: string): Player => ({
+			...on(id, side),
+			name: `[xy] ${id}`
+		});
+		const m = memoryOf(w.server.id)!;
+		const context = (playersObserved = true, matchEnd?: TickContext['matchEnd']) =>
+			({
+				server: { id: w.server.id, name: 'Server' },
+				status: {
+					scores: ['Manticore', 'Valkyra', 'Lonestar'].map((name) => ({
+						name,
+						colorHex: '',
+						score: 0
+					}))
+				},
+				players: m.players,
+				playersObserved,
+				playersIntervalMs: 5000,
+				ts: new Date(),
+				matchEnd
+			}) as TickContext;
+		const queue = async () => {
+			const ev = await evaluateTriggers(env, context(), [rule]);
+			await enqueueIntents(env.db, w.server.id, ev.intents);
+			for (const f of ev.afterCommit ?? []) f();
+			return (
+				await env.db
+					.select({ id: outbox.id })
+					.from(outbox)
+					.where(
+						inArray(
+							outbox.dedupeKey,
+							ev.intents.map((i) => i.dedupeKey)
+						)
+					)
+			).map((r) => r.id);
+		};
+		try {
+			m.players = [
+				clanPlayer(A, 'Manticore'),
+				...[B, C, D, E].map((id) => clanPlayer(id, 'Valkyra'))
+			];
+			m.playersAt = Date.now();
+			const moves = await queue();
+			const firstRequest = requests.length;
+			startDelivery(env);
+			await until(async () => (await rowsOf(moves)).every((r) => r.doneAt !== null));
+			expect(requests.slice(firstRequest)).toEqual(
+				[B, C, D, E].map((id) => `PATCH /v1/players/${id}`)
+			);
+			await stopDelivery();
+			// The next player list confirms all four moves. Both recipients' notices are queued.
+			m.players = [B, C, D, E, A].map((id) => clanPlayer(id, 'Manticore'));
+			m.playersAt = Date.now();
+			const notices = await queue();
+			expect(notices).toHaveLength(8);
+			// Before those notices go out, C changes tag, D switches back and E leaves.
+			m.players = [
+				clanPlayer(A, 'Manticore'),
+				clanPlayer(B, 'Manticore'),
+				{ ...clanPlayer(C, 'Manticore'), name: 'Solo' },
+				clanPlayer(D, 'Valkyra')
+			];
+			m.playersAt = Date.now();
+			const firstMessage = messages.length;
+			startDelivery(env);
+			await until(async () => (await rowsOf(notices)).every((r) => r.doneAt !== null));
+			expect(messages.slice(firstMessage)).toEqual([
+				{
+					path: `/v1/players/${B}/message`,
+					message: 'You were moved to Manticore to join your clan [xy].'
+				},
+				{
+					path: `/v1/players/${A}/message`,
+					message: `[xy] ${B} was moved to your team (Manticore) because you share the clan tag [xy].`
+				}
+			]);
+			expect((await rowsOf(notices)).map((r) => r.state)).toEqual([
+				'delivered',
+				'delivered',
+				...Array(6).fill('skipped')
+			]);
+			await stopDelivery();
+			m.players = [clanPlayer(A, 'Manticore'), clanPlayer(B, 'Manticore')];
+			expect(await queue()).toEqual([]);
+			m.players.push(clanPlayer(F, 'Lonestar'));
+			await queue();
+			m.players = [
+				clanPlayer(A, 'Manticore'),
+				clanPlayer(B, 'Manticore'),
+				clanPlayer(F, 'Manticore')
+			];
+			const oldMatchNotices = await queue();
+			expect(oldMatchNotices).toHaveLength(2);
+			await evaluateTriggers(env, context(false, {} as TickContext['matchEnd']), [rule]);
+			m.playersAt = Date.now();
+			startDelivery(env);
+			await until(async () => (await rowsOf(oldMatchNotices)).every((r) => r.doneAt !== null));
+			expect((await rowsOf(oldMatchNotices)).map((r) => [r.state, r.outcome])).toEqual([
+				['skipped', 'A new match began.'],
+				['skipped', 'A new match began.']
+			]);
+			expect(messages.slice(firstMessage)).toHaveLength(2);
+		} finally {
+			await stopDelivery();
+			await env.db.delete(triggers).where(eq(triggers.id, rule.id));
+			invalidateTriggers(w.server.id);
+			forgetRuleMemory();
+			requests.length = 0;
+		}
 	}, 30_000);
 
 	test('a second move waits for a newer player list, then goes only if the first did not land', async () => {

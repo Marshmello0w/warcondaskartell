@@ -238,6 +238,10 @@
 				return canSlotHere || canSlotOrg
 					? ''
 					: 'Saving needs the Reserved slots capability (or Org reserved slots, for a slot on every server) as well as Automation.';
+			case 'clan_teams':
+				return canChat
+					? ''
+					: 'Saving needs Chat as well as Automation and Move, to notify both players.';
 			default:
 				return '';
 		}
@@ -1800,6 +1804,11 @@
 						A move uses the game's team change without an additional kill. Failed moves retry every
 						15 seconds, up to ten attempts in ten minutes; 30 seconds on the clan’s side resets the
 						attempts. Turn off Team balance before enabling this rule.
+					</p>
+					<p class="text-[12px] text-mist-600">
+						Once a move is confirmed, the moved player and the member who established the clan’s
+						side receive an English whisper with the clan tag and team. Retries and Watch only send
+						no whispers.
 					</p>
 				{:else if f.kind === 'two_teams'}
 					<fieldset class="space-y-2 text-[13px]">
