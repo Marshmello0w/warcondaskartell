@@ -16,7 +16,7 @@ import type { BanScope } from './rule-ban';
 /** The outbox action of a Kill distance flag: a panel action, nothing is sent to the game. */
 export const KILL_DISTANCE_FLAG = 'kill_distance_flag';
 
-export type KillDistanceAction = 'flag' | 'warn' | 'kick' | 'ban';
+export type KillDistanceAction = 'flag' | 'warn' | 'kill' | 'kick' | 'ban';
 
 export interface KillDistanceConfig {
 	/**
@@ -32,7 +32,7 @@ export interface KillDistanceConfig {
 	/** how long a ban lasts; 0 is for good */
 	banDays: number;
 	banScope: BanScope;
-	/** what the player is told: the warning whispered, or the kick or ban reason */
+	/** what the player is told: the warning whispered (with a kill too), or the kick or ban reason */
 	reason: string;
 	/** a flagged or warned player is not flagged or warned again by the rule for this long */
 	cooldownMinutes: number;
@@ -45,7 +45,7 @@ export interface KillDistanceConfig {
  */
 export const killDistanceAction = (c: unknown): KillDistanceAction => {
 	const a = c && typeof c === 'object' ? (c as Record<string, unknown>).action : undefined;
-	return a === 'warn' || a === 'kick' || a === 'ban' ? a : 'flag';
+	return a === 'warn' || a === 'kill' || a === 'kick' || a === 'ban' ? a : 'flag';
 };
 /** Which list a rule's ban goes on: the organisation's only when asked for by name. */
 export const killDistanceBanScope = (c: unknown): BanScope =>
@@ -64,10 +64,10 @@ export function validateKillDistance(c: Record<string, unknown>): KillDistanceCo
 		action,
 		banDays: int(c.banDays, 0, 0, 3650),
 		banScope: killDistanceBanScope(c),
-		// a text left blank: a warning says what is not allowed, a kick or ban why
+		// a text left blank: a warning (with a kill or not) says what is not allowed, a kick or ban why
 		reason:
 			str(c.reason, 200) ||
-			(action === 'warn'
+			(action === 'warn' || action === 'kill'
 				? '{weapon} is not allowed on this server.'
 				: 'Impossible kill: {weapon} from {distance} m.'),
 		cooldownMinutes: int(c.cooldownMinutes, 30, 1, 24 * 60)
@@ -129,9 +129,10 @@ export interface DistanceTrack {
 export type DistanceTracks = Map<string, DistanceTrack>;
 
 /**
- * How long a kick or a ban leaves the player alone: the time a kick takes to land (a second one
- * right behind it would find them gone). One who is back and does it again after that is acted on
- * at their next such kill.
+ * How long a kill, a kick or a ban leaves the player alone: the time a kick takes to land (a second
+ * one right behind it would find them gone), and long enough that a kill is not sent twice for one
+ * burst (a roadkill of three, a batch the game held back), which would land the second on them
+ * after they respawn. One who does it again after that is acted on at their next such kill.
  */
 export const ACT_AGAIN_MS = 60_000;
 

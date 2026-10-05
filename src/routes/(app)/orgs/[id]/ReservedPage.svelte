@@ -117,11 +117,17 @@
 
 	$effect(() => {
 		const ids = servers.map((s) => s.id);
-		return watchLive(ids, (v) => {
-			playersOn[v.serverId] = v.ok
-				? v.players.map((p) => ({ steamId: p.steamId, name: p.name }))
-				: [];
-		});
+		return watchLive(
+			ids,
+			(v) => {
+				playersOn[v.serverId] = v.ok
+					? v.players.map((p) => ({ steamId: p.steamId, name: p.name }))
+					: [];
+			},
+			undefined,
+			undefined,
+			{ org: org.id, players: true }
+		);
 	});
 	// Personas are looked up for the list's ids alone, so a lookup never re-runs on its own result.
 	let listIds = $derived(
@@ -428,6 +434,7 @@
 									{#if dossierBase}
 										<a
 											href="{dossierBase}/{e.steamId}"
+											data-sveltekit-preload-data="tap"
 											class="truncate font-medium hover:text-accent hover:underline {r.name
 												? ''
 												: 'text-mist-400 italic'}"

@@ -69,10 +69,11 @@ describe('validateKillDistance', () => {
 		});
 		expect('windowMinutes' in c).toBe(false);
 	});
-	test('a text left blank: a warning says what is not allowed, a kick or ban why', () => {
-		expect(validateKillDistance({ causes: [DEFIB], action: 'warn', reason: ' ' }).reason).toBe(
-			'{weapon} is not allowed on this server.'
-		);
+	test('a text left blank: a warning or a kill says what is not allowed, a kick or ban why', () => {
+		for (const action of ['warn', 'kill'])
+			expect(validateKillDistance({ causes: [DEFIB], action, reason: ' ' }).reason).toBe(
+				'{weapon} is not allowed on this server.'
+			);
 		for (const action of ['flag', 'kick', 'ban'])
 			expect(validateKillDistance({ causes: [DEFIB], action }).reason).toBe(
 				'Impossible kill: {weapon} from {distance} m.'
@@ -87,13 +88,16 @@ describe('validateKillDistance', () => {
 			expect(validateKillDistance({ causes: [DEFIB], action }).action).toBe('flag');
 		expect(validateKillDistance({ causes: [DEFIB], action: 'ban' }).action).toBe('ban');
 		expect(validateKillDistance({ causes: [DEFIB], action: 'warn' }).action).toBe('warn');
+		expect(validateKillDistance({ causes: [DEFIB], action: 'kill' }).action).toBe('kill');
 		expect(validateKillDistance({ causes: [DEFIB], action: 'WARN' }).action).toBe('flag');
+		expect(validateKillDistance({ causes: [DEFIB], action: 'Kill' }).action).toBe('flag');
 		expect(validateKillDistance({ causes: [DEFIB], banScope: 'ORG' }).banScope).toBe('server');
 		expect(validateKillDistance({ causes: [DEFIB], banScope: 'org' }).banScope).toBe('org');
 		// the capability check reads raw settings the same way
 		expect(killDistanceAction('ban')).toBe('flag');
 		expect(killDistanceAction({ action: 'ban' })).toBe('ban');
 		expect(killDistanceAction({ action: 'warn' })).toBe('warn');
+		expect(killDistanceAction({ action: 'kill' })).toBe('kill');
 		expect(killDistanceBanScope(['org'])).toBe('server');
 	});
 	test('the settings key changes with any setting and not with key order', () => {
@@ -181,8 +185,8 @@ describe('killDistanceStep', () => {
 	test('one kill is enough when the count is one', () => {
 		expect(killDistanceStep(cfg({ count: 1 }), new Map(), A, 0)).toBe(1);
 	});
-	test('a kick or ban leaves the player a minute on the panel’s clock, then acts at the next such kill', () => {
-		for (const action of ['kick', 'ban'] as const) {
+	test('a kill, kick or ban leaves the player a minute on the panel’s clock, then acts at the next such kill', () => {
+		for (const action of ['kill', 'kick', 'ban'] as const) {
 			const tracks: DistanceTracks = new Map();
 			const c = cfg({ action, count: 1 });
 			const now = 1_000_000;
@@ -191,7 +195,7 @@ describe('killDistanceStep', () => {
 			expect(killDistanceStep(c, tracks, A, now)).toBeNull();
 			expect(killDistanceStep(c, tracks, A, now)).toBeNull();
 			expect(killDistanceStep(c, tracks, A, now + ACT_AGAIN_MS - 1)).toBeNull();
-			// back after the kick and at it again
+			// back after the kick (or respawned after the kill) and at it again
 			expect(killDistanceStep(c, tracks, A, now + ACT_AGAIN_MS)).toBe(5);
 		}
 	});

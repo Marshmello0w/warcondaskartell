@@ -267,6 +267,20 @@
       "when": 1791129692378,
       "tag": "0037_feed_event_times",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791129693378,
+      "tag": "0038_read_and_write_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1791129694378,
+      "tag": "0039_player_totals",
+      "breakpoints": true
     }
   ]
 }

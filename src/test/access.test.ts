@@ -615,11 +615,45 @@ describe.skipIf(!hasTestDb)('access', () => {
 				body: { enabled: false }
 			});
 			expect(off.status).toBe(200);
-			for (const action of ['kick', 'flag']) {
+			for (const action of ['kick', 'flag', 'kill']) {
 				const got = await api(w, 'viewer', 'PATCH api/servers/[id]/triggers/[triggerId]', {
 					params: {
 						id: w.server.id,
 						triggerId: (warns.body as { trigger: { id: string } }).trigger.id
+					},
+					body: { config: { causes: [DEFIB], action } }
+				});
+				expect([action, got.status]).toEqual([action, 403]);
+			}
+			// a kill needs Kill for the kill and Chat for its whisper: neither alone, nor Kick in place
+			// of Kill, will do
+			const kill = { kind: 'kill_distance', config: { causes: [DEFIB], action: 'kill' } };
+			for (const caps of [['players.kill'], ['chat.send'], ['players.kick', 'chat.send']]) {
+				await holds(caps);
+				for (const route of [
+					'POST api/servers/[id]/triggers',
+					'POST api/servers/[id]/triggers/dry-run'
+				]) {
+					const got = await api(w, 'viewer', route, { params, body: kill });
+					expect([caps, route, got.status]).toEqual([caps, route, 403]);
+				}
+			}
+			await holds(['players.kill', 'chat.send']);
+			expect(
+				(await api(w, 'viewer', 'POST api/servers/[id]/triggers/dry-run', { params, body: kill }))
+					.status
+			).toBe(200);
+			const kills = await api(w, 'viewer', 'POST api/servers/[id]/triggers', {
+				params,
+				body: kill
+			});
+			expect(kills.status).toBe(201);
+			// and their kill rule is not theirs to turn into a kick or a flag (Kick)
+			for (const action of ['kick', 'flag']) {
+				const got = await api(w, 'viewer', 'PATCH api/servers/[id]/triggers/[triggerId]', {
+					params: {
+						id: w.server.id,
+						triggerId: (kills.body as { trigger: { id: string } }).trigger.id
 					},
 					body: { config: { causes: [DEFIB], action } }
 				});
@@ -817,68 +851,78 @@ describe.skipIf(!hasTestDb)('access', () => {
 			}
 		});
 
-		test('a Kill distance rule that warns: who may save, dry-run and switch it on', async () => {
-			const w = await seedWorld(env);
+		for (const [what, action, cause, lacking] of [
 			// Automation and Kick, but not Chat: a rule that whispers is not theirs.
-			await env.db
-				.update(orgRoles)
-				.set({ capabilities: ['server.view', 'automation.manage', 'players.kick'] })
-				.where(eq(orgRoles.id, w.roles.viewer));
-			const expected: Record<PrincipalName, number> = {
-				anon: 401,
-				stranger: 404,
-				outsider: 404,
-				member: 404,
-				viewer: 403,
-				operator: 403,
-				admin: 200,
-				elsewhere: 404,
-				orgBans: 403,
-				orgSlots: 403,
-				owner: 200,
-				site: 200,
-				keyView: 403,
-				keyAll: 200,
-				keyElsewhere: 404,
-				keyBans: 403
-			};
-			const body = {
-				kind: 'kill_distance',
-				config: {
-					causes: ['Id.Vehicle.WeaponExtension.WHL_05.RingTurret'],
-					minDistanceM: 0,
-					action: 'warn',
-					reason: 'The {weapon} is not allowed here.'
+			['warns', 'warn', 'Id.Vehicle.WeaponExtension.WHL_05.RingTurret', ['players.kick']],
+			// Automation and Kill, but not Chat: a kill comes with a whisper.
+			['kills', 'kill', 'Vehicle.Variant.Land.Wheeled.Humvee.Default', ['players.kill']],
+			// Automation and Chat, but not Kill.
+			['kills (without Kill)', 'kill', 'Vehicle.Variant.Land.Wheeled.Humvee.Default', ['chat.send']]
+		] as const)
+			test(`a Kill distance rule that ${what}: who may save, dry-run and switch it on`, async () => {
+				const w = await seedWorld(env);
+				await env.db
+					.update(orgRoles)
+					.set({ capabilities: ['server.view', 'automation.manage', ...lacking] })
+					.where(eq(orgRoles.id, w.roles.viewer));
+				const expected: Record<PrincipalName, number> = {
+					anon: 401,
+					stranger: 404,
+					outsider: 404,
+					member: 404,
+					viewer: 403,
+					operator: 403,
+					admin: 200,
+					elsewhere: 404,
+					orgBans: 403,
+					orgSlots: 403,
+					owner: 200,
+					site: 200,
+					keyView: 403,
+					keyAll: 200,
+					keyElsewhere: 404,
+					keyBans: 403
+				};
+				const body = {
+					kind: 'kill_distance',
+					config: {
+						causes: [cause],
+						minDistanceM: 0,
+						action,
+						reason: 'The {weapon} is not allowed here.'
+					}
+				};
+				const made = await api(w, 'owner', 'POST api/servers/[id]/triggers', {
+					params: { id: w.server.id },
+					body
+				});
+				expect(made.status).toBe(201);
+				const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
+				for (const [who, status] of Object.entries(expected) as [PrincipalName, number][]) {
+					const got = [
+						await api(w, who, 'POST api/servers/[id]/triggers/dry-run', {
+							params: { id: w.server.id },
+							body
+						}),
+						await api(w, who, 'PATCH api/servers/[id]/triggers/[triggerId]', {
+							params: { id: w.server.id, triggerId },
+							body: { enabled: true }
+						}),
+						await api(w, who, 'POST api/servers/[id]/triggers', {
+							params: { id: w.server.id },
+							body
+						})
+					].map((r) => r.status);
+					// a create that gets through answers 201
+					expect([who, ...got]).toEqual([who, status, status, status === 200 ? 201 : status]);
 				}
-			};
-			const made = await api(w, 'owner', 'POST api/servers/[id]/triggers', {
-				params: { id: w.server.id },
-				body
+				// The rule's id under another server's path is not found, even for its org's owner.
+				const moved = await api(w, 'owner', 'PATCH api/servers/[id]/triggers/[triggerId]', {
+					params: { id: w.otherServer.id, triggerId },
+					body: { enabled: false }
+				});
+				expect(moved.status).toBe(404);
 			});
-			expect(made.status).toBe(201);
-			const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
-			for (const [who, status] of Object.entries(expected) as [PrincipalName, number][]) {
-				const got = [
-					await api(w, who, 'POST api/servers/[id]/triggers/dry-run', {
-						params: { id: w.server.id },
-						body
-					}),
-					await api(w, who, 'PATCH api/servers/[id]/triggers/[triggerId]', {
-						params: { id: w.server.id, triggerId },
-						body: { enabled: true }
-					}),
-					await api(w, who, 'POST api/servers/[id]/triggers', { params: { id: w.server.id }, body })
-				].map((r) => r.status);
-				// a create that gets through answers 201
-				expect([who, ...got]).toEqual([who, status, status, status === 200 ? 201 : status]);
-			}
-			// The rule's id under another server's path is not found, even for its org's owner.
-			const moved = await api(w, 'owner', 'PATCH api/servers/[id]/triggers/[triggerId]', {
-				params: { id: w.otherServer.id, triggerId },
-				body: { enabled: false }
-			});
-			expect(moved.status).toBe(404);
-		});
 
 		for (const [what, config] of [
 			['closing a faction', { closedFaction: 'Lonestar' }],

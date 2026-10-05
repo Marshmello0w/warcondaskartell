@@ -135,7 +135,7 @@ describe.skipIf(!hasTestDb)('Team balance against the panel', () => {
 		player(REFUSED, refusedTo)
 	];
 	/** One look at this server now, its moves remembered as the worker remembers them. */
-	const evaluate = async (r: TriggerRow, players: Player[]) => {
+	const evaluate = async (r: TriggerRow, players: Player[], at = Date.now()) => {
 		const ctx = {
 			server: { id: w.server.id, name: 'Server' },
 			status: {
@@ -148,15 +148,15 @@ describe.skipIf(!hasTestDb)('Team balance against the panel', () => {
 			players,
 			playersObserved: true,
 			playersIntervalMs: 1000,
-			ts: new Date()
+			ts: new Date(at)
 		} as unknown as TickContext;
 		const ev = await evaluateTriggers(env, ctx, [r]);
 		for (const f of ev.afterCommit ?? []) f();
 		return ev;
 	};
 	/** whom one look moves */
-	const look = async (r: TriggerRow, players: Player[]) =>
-		(await evaluate(r, players)).intents
+	const look = async (r: TriggerRow, players: Player[], at = Date.now()) =>
+		(await evaluate(r, players, at)).intents
 			.filter((i) => i.action === 'changeTeam')
 			.map((i) => i.target);
 
@@ -176,6 +176,20 @@ describe.skipIf(!hasTestDb)('Team balance against the panel', () => {
 		// a person allowed to move players, but on another server: a note there covers nobody here
 		expect((await changeTeam('owner', MOVED, w.otherServer.id)).status).toBe(200);
 		expect(await look(r, teams(V))).toEqual([MOVED]);
+	});
+
+	test('repeated switches respect the 15-second interval after a brief placement', async () => {
+		const r = rule();
+		const at = Date.now();
+		expect(await look(r, teams(), at)).toEqual([]);
+		for (let i = 0; i < 5; i++) {
+			const now = at + 1000 + i * 15_000;
+			// onto Valkyra, 8 v 4: put back
+			expect(await look(r, teams(V), now)).toEqual([MOVED]);
+			// and seen back on Manticore, where the move put them
+			expect(await look(r, teams(), now + 1000)).toEqual([]);
+			expect(await look(r, teams(V), now + 14_999)).toEqual([]);
+		}
 	});
 
 	test('a move from the Players tab or the API is kept; one the game refused is not', async () => {

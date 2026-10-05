@@ -1,13 +1,14 @@
 // Leaderboards and careers, read at page load from what the worker writes: each player's line
 // of every match (match_players: the game's own kills and deaths, the feed's headshots, team
 // kills, suicides, vehicle kills and streaks, time on and the side played) joined to its match
-// for the result, and the sessions for playtime, seed time, the last name and cash.
-// Nothing is precomputed. The queries ride the existing indexes: matches (server_id,
-// started_at), match_players (match_id, steam_id) and (steam_id, match_id), player_sessions
-// (server_id, last_seen) and (steam_id, joined_at). Only matches that have ended count, and a
-// match is in a range by when it ended; the match in progress is on the live page. The result
-// of a match for a player (win, loss, draw, none) is the rule in $lib/leaderboard, written out
-// again in SQL below for the aggregates.
+// for the result, and the sessions for playtime, seed time, the last name and cash. All time is
+// read from each player's settled totals per server (player_totals, kept by the database as
+// sessions close and matches end, migration 0039) plus the open sessions; a range (7, 30, 90
+// days) sums the sources in it. A page of a board is kept for a minute (loadBoard). Only matches
+// that have ended count, and a match is in a range by when it ended; the match in progress is on
+// the live page. The result of a match for a player (win, loss, draw, none) is the rule in
+// $lib/leaderboard, written out again in SQL below for the aggregates (and once more, as
+// match_result(), in the migration).
 import { sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { servers } from './db/schema';
@@ -72,6 +73,7 @@ const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sq
 		       SUM(seed_seconds) / 60.0 AS seed_minutes, MAX(last_seen) AS last_seen,
 		       SUM(cash) AS cash
 		  FROM player_sessions WHERE server_id IN ${ids} AND last_seen >= ${from}
+		   AND (left_at IS NULL OR left_at >= ${from})
 		   ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}
 		 GROUP BY steam_id),
 	${lines(ids, from, steamIds)},
@@ -84,6 +86,46 @@ const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sq
 		       COUNT(*) FILTER (WHERE result = 'loss') AS losses,
 		       COUNT(*) FILTER (WHERE result = 'draw') AS draws
 		  FROM lines GROUP BY steam_id),
+	base AS (
+		SELECT steam_id,
+		       COALESCE(sess.minutes, 0) AS minutes, COALESCE(sess.seed_minutes, 0) AS seed_minutes,
+		       COALESCE(sess.cash, 0) AS cash, sess.last_seen,
+		       COALESCE(mt.kills, 0) AS kills, COALESCE(mt.deaths, 0) AS deaths,
+		       COALESCE(mt.headshots, 0) AS headshots, COALESCE(mt.team_kills, 0) AS team_kills,
+		       COALESCE(mt.suicides, 0) AS suicides, COALESCE(mt.vehicle_kills, 0) AS vehicle_kills,
+		       COALESCE(mt.kill_streak, 0) AS kill_streak, COALESCE(mt.death_streak, 0) AS death_streak,
+		       COALESCE(mt.matches, 0) AS matches, COALESCE(mt.wins, 0) AS wins,
+		       COALESCE(mt.losses, 0) AS losses, COALESCE(mt.draws, 0) AS draws
+		  FROM sess FULL JOIN mt USING (steam_id))`;
+
+/**
+ * `base` for all time, from the settled totals: `sess` is the pairs with a closed session plus
+ * the open sessions, `mt` the pairs with a line of an ended match, then the same join. The same
+ * rows and values as base(ids, EPOCH, steamIds): the seconds are exact numeric sums either way,
+ * and a player with no session at all still gets the join's zeros. Also read by the exactness
+ * test (src/test/player-totals.test.ts).
+ */
+export const totalsBase = (ids: string[], steamIds: string[] | null = null) => sql`
+	sess AS (
+		SELECT steam_id, SUM(seconds) / 60 AS minutes, SUM(seed_seconds) / 60.0 AS seed_minutes,
+		       MAX(last_seen) AS last_seen, SUM(cash) AS cash
+		  FROM (SELECT steam_id, seconds, seed_seconds, cash, last_seen FROM player_totals
+		         WHERE server_id IN ${ids} AND sessions > 0
+		           ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}
+		        UNION ALL
+		        SELECT steam_id, EXTRACT(EPOCH FROM (now() - joined_at)), seed_seconds, cash, last_seen
+		          FROM player_sessions WHERE server_id IN ${ids} AND left_at IS NULL
+		           ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}) s
+		 GROUP BY steam_id),
+	mt AS (
+		SELECT steam_id, SUM(matches) AS matches,
+		       SUM(kills) AS kills, SUM(deaths) AS deaths, SUM(headshots) AS headshots,
+		       SUM(team_kills) AS team_kills, SUM(suicides) AS suicides, SUM(vehicle_kills) AS vehicle_kills,
+		       MAX(kill_streak) AS kill_streak, MAX(death_streak) AS death_streak,
+		       SUM(wins) AS wins, SUM(losses) AS losses, SUM(draws) AS draws
+		  FROM player_totals WHERE server_id IN ${ids} AND matches > 0
+		   ${steamIds === null ? sql`` : sql`AND steam_id IN ${steamIds}`}
+		 GROUP BY steam_id),
 	base AS (
 		SELECT steam_id,
 		       COALESCE(sess.minutes, 0) AS minutes, COALESCE(sess.seed_minutes, 0) AS seed_minutes,
@@ -130,13 +172,10 @@ export async function riskPerformanceFor(
 			kills: string;
 			deaths: string;
 		}>(sql`
-			WITH ${lines(serverIds, EPOCH, steamIds)}
-			SELECT steam_id AS "steamId", COUNT(*) AS matches,
-			       COUNT(*) FILTER (WHERE result = 'win') AS wins,
-			       COUNT(*) FILTER (WHERE result = 'loss') AS losses,
-			       COUNT(*) FILTER (WHERE result = 'draw') AS draws,
-			       SUM(kills) AS kills, SUM(deaths) AS deaths
-			  FROM lines GROUP BY steam_id`)
+			SELECT steam_id AS "steamId", SUM(matches) AS matches, SUM(wins) AS wins,
+			       SUM(losses) AS losses, SUM(draws) AS draws, SUM(kills) AS kills, SUM(deaths) AS deaths
+			  FROM player_totals WHERE server_id IN ${serverIds} AND steam_id IN ${steamIds}
+			 GROUP BY steam_id HAVING SUM(matches) > 0`)
 	]);
 	const of = (steamId: string) => {
 		let value = result.get(steamId);
@@ -221,10 +260,10 @@ async function boardSlice(
 	limit: number,
 	offset: number
 ): Promise<BaseRow[]> {
-	const from = rangeStart(q.range) ?? EPOCH;
+	const from = rangeStart(q.range);
 	const order = q.dir === 'asc' ? sql`ASC NULLS LAST` : sql`DESC NULLS LAST`;
 	return (await env.db.execute<BaseRow>(sql`
-		WITH ${base(ids, from)},
+		WITH ${from ? base(ids, from) : totalsBase(ids)},
 		page AS (
 			SELECT *, COUNT(*) OVER () AS total FROM base
 			 WHERE minutes >= ${q.minMinutes}
@@ -235,13 +274,54 @@ async function boardSlice(
 		       r.vehicle_kills AS "vehicleKills", r.kill_streak AS "killStreak", r.death_streak AS "deathStreak",
 		       r.matches, r.wins, r.losses, r.draws, r.total,
 		       (SELECT name FROM player_sessions ps WHERE ps.steam_id = r.steam_id AND ps.server_id IN ${ids}
-		         ORDER BY ps.last_seen DESC LIMIT 1) AS name
+		         ORDER BY ps.joined_at DESC, ps.id DESC LIMIT 1) AS name
 		  FROM page r`)) as BaseRow[];
+}
+
+/**
+ * A page of a board is the same for everyone who may see these servers, and each one is an
+ * aggregate over its whole range: each (servers, query) is read once a minute per web process,
+ * and the requests that ask for it while it is being read wait for that read. The key is the
+ * server ids the caller's own check settled on, so a board over servers someone was not given
+ * is never theirs. A minute behind is the price: a match that just ended may not be on it yet.
+ */
+const BOARD_TTL_MS = 60_000;
+/** The most pages kept: fifty rows each, a few megabytes at most. */
+const BOARD_CACHE_MAX = 500;
+const boardCache = new Map<string, { ids: string[]; until: number; view: Promise<BoardView> }>();
+
+/** Forgets the boards kept over this server (its stats were purged), or every board. */
+export function forgetBoards(serverId?: string): void {
+	for (const [key, hit] of boardCache)
+		if (serverId === undefined || hit.ids.includes(serverId)) boardCache.delete(key);
 }
 
 export async function loadBoard(env: Env, ids: string[], q: BoardQuery): Promise<BoardView> {
 	const empty: BoardView = { query: q, rows: [], total: 0, pageSize: BOARD_PAGE, hasFeed: false };
 	if (!ids.length) return empty;
+	const sorted = [...new Set(ids)].sort();
+	const key = JSON.stringify([sorted, q.scope, q.range, q.sort, q.dir, q.page, q.minMinutes]);
+	const now = Date.now();
+	const hit = boardCache.get(key);
+	if (hit && hit.until > now) return hit.view;
+	const entry = { ids: sorted, until: now + BOARD_TTL_MS, view: readBoard(env, sorted, q) };
+	boardCache.delete(key);
+	boardCache.set(key, entry);
+	// A failed read is not kept: the next request reads again.
+	entry.view.catch(() => {
+		if (boardCache.get(key) === entry) boardCache.delete(key);
+	});
+	if (boardCache.size > BOARD_CACHE_MAX) {
+		for (const [k, e] of boardCache) if (e.until <= now) boardCache.delete(k);
+		for (const k of boardCache.keys()) {
+			if (boardCache.size <= BOARD_CACHE_MAX) break;
+			boardCache.delete(k);
+		}
+	}
+	return entry.view;
+}
+
+async function readBoard(env: Env, ids: string[], q: BoardQuery): Promise<BoardView> {
 	const offset = (q.page - 1) * BOARD_PAGE;
 	const [rows, hasFeed] = await Promise.all([
 		boardSlice(env, ids, q, BOARD_PAGE, offset),
@@ -307,7 +387,7 @@ export async function playerStats(
 		losses: string;
 		draws: string;
 	}>(sql`
-		WITH ${base(ids, EPOCH, steamIds)}
+		WITH ${totalsBase(ids, steamIds)}
 		SELECT steam_id AS "steamId", minutes, seed_minutes AS "seedMinutes", kills, deaths,
 		       matches, wins, losses, draws
 		  FROM base`);
@@ -330,7 +410,7 @@ export async function lastNameOf(env: Env, ids: string[], steamId: string): Prom
 	if (!ids.length) return null;
 	const [row] = await env.db.execute<{ name: string }>(sql`
 		SELECT name FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids}
-		 ORDER BY last_seen DESC LIMIT 1`);
+		 ORDER BY joined_at DESC, id DESC LIMIT 1`);
 	return row?.name ?? null;
 }
 
@@ -341,7 +421,7 @@ export async function lastNameOf(env: Env, ids: string[], steamId: string): Prom
 export async function rankOf(env: Env, ids: string[], steamId: string): Promise<number | null> {
 	if (!ids.length) return null;
 	const [row] = await env.db.execute<{ qualifies: boolean | null; above: string }>(sql`
-		WITH ${base(ids, EPOCH)},
+		WITH ${totalsBase(ids)},
 		me AS (SELECT kills, minutes FROM base WHERE steam_id = ${steamId})
 		SELECT (SELECT minutes >= ${DEFAULT_FLOOR_MINUTES} FROM me) AS qualifies,
 		       (SELECT COUNT(*) FROM base, me WHERE base.minutes >= ${DEFAULT_FLOOR_MINUTES} AND base.kills > me.kills) AS above`);

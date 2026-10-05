@@ -8,6 +8,8 @@ import { sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { ServerRow, SessionUser } from './access';
 import { writeAudit } from './audit';
+import { forgetBoards } from './leaderboards';
+import { lockTotals } from './totals';
 
 export interface PurgeCounts {
 	kills: number;
@@ -22,6 +24,8 @@ export async function purgeServerStats(
 	server: ServerRow
 ): Promise<PurgeCounts> {
 	const counts = await env.db.transaction(async (tx) => {
+		// Take totals before any row locks, as the observer does when ending a match.
+		await lockTotals(tx, server.id);
 		await tx.execute(
 			sql`SELECT pg_advisory_xact_lock(hashtextextended(${'feed:' + server.id}, 0))`
 		);
@@ -39,6 +43,8 @@ export async function purgeServerStats(
 		const matches = await del('matches');
 		return { kills, matches, matchPlayers };
 	});
+	// The boards this web process keeps for a minute would show the purged numbers until then.
+	forgetBoards(server.id);
 	await writeAudit(env, req, {
 		actor,
 		server: { id: server.id, name: server.name },

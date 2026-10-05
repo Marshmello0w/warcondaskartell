@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
 import { authConfigured } from '$lib/server/auth';
-import { getEnv } from '$lib/server/env';
+import { getEnv, supportUrl } from '$lib/server/env';
 
 export const load: LayoutServerLoad = async ({ locals }) => {
 	const env = getEnv();
@@ -11,5 +11,5 @@ export const load: LayoutServerLoad = async ({ locals }) => {
 			code: 'config'
 		});
 	}
-	return { user: locals.user, appName: env.APP_NAME || 'Warcon' };
+	return { user: locals.user, appName: env.APP_NAME || 'Warcon', supportUrl: supportUrl(env) };
 };

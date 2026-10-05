@@ -21,18 +21,20 @@ export const load: PageServerLoad = (event) =>
 		if (!/^\d{17}$/.test(steamId)) throw new ApiError(404, 'Not found.', 'not_found');
 		const orgServers = await publicOrgServers(env, ps.org, 'leaderboards');
 		const ids = orgServers.map((s) => s.id);
-		const [career, name, profiles, combat] = await Promise.all([
+		// A player these servers never saw is a 404 before the career reads anything: any 17
+		// digits reach this page, and the career reads the boards.
+		const name = await lastNameOf(env, ids, steamId);
+		if (!name) throw new ApiError(404, 'Not found.', 'not_found');
+		const [career, profiles, combat] = await Promise.all([
 			loadCareer(env, {
 				serverId: ps.server.id,
 				ids,
 				nameOf: new Map(orgServers.map((s) => [s.id, s.name])),
 				steamId
 			}),
-			lastNameOf(env, ids, steamId),
 			cachedProfiles(env, [steamId]),
 			combatSummary(env, ids, steamId)
 		]);
-		if (!name) throw new ApiError(404, 'Not found.', 'not_found');
 		const steam = profiles.get(steamId);
 		return {
 			career,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 // A page's data can be requested without its layouts: SvelteKit's __data.json takes a mask of the
 // nodes to run, and even without the mask a layout's refusal and the page's data are answered
@@ -44,7 +44,7 @@ describe('page loads under (app)', () => {
 	});
 
 	for (const file of files) {
-		const name = relative(APP, file);
+		const name = relative(APP, file).split(sep).join('/');
 		const source = readFileSync(file, 'utf8');
 		// A page that only redirects reads nothing and has nothing to guard.
 		if (!source.includes('$lib/server/')) continue;

@@ -342,6 +342,7 @@ describe.skipIf(!hasTestDb)('forwarded feed, persisted times and moderation', ()
 		for (const [kind, cfg] of [
 			['kill_rate', { maxKills: 1 }],
 			['kill_distance', { causes: ['Id.Item.AK74M'], minDistanceM: 1, count: 1, action: 'flag' }],
+			['kill_distance', { causes: ['Id.Item.AK74M'], minDistanceM: 1, count: 1, action: 'kill' }],
 			['team_kill', { warnAt: 1, kickAt: 3 }]
 		] as const)
 			await env.db.insert(triggers).values({
@@ -378,6 +379,7 @@ describe.skipIf(!hasTestDb)('forwarded feed, persisted times and moderation', ()
 			expect(rows.map((r) => r.action).sort()).toEqual([
 				'kill_distance_flag',
 				'kill_rate_flag',
+				'rule_kill',
 				'whisper'
 			]);
 			expect((rows.find((r) => r.action === 'whisper')?.detail as { count: number }).count).toBe(1);

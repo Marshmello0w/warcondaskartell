@@ -165,6 +165,30 @@ export function diffPresence(
 
 const json = (v: unknown) => sql`(${JSON.stringify(v)}::text)::jsonb`;
 
+/**
+ * The name each of these SteamIDs last played under on these servers (none for one never seen
+ * there). One look per player at their newest session, which the steam_id index finds without
+ * reading the rest of their history: a player's sessions do not overlap, so the newest join is
+ * the last one seen.
+ */
+export async function latestNames(
+	db: DbOrTx,
+	serverIds: string[],
+	steamIds: string[]
+): Promise<Map<string, string>> {
+	const out = new Map<string, string>();
+	const ids = [...new Set(steamIds)];
+	if (!serverIds.length || !ids.length) return out;
+	const rows = await db.execute<{ steamId: string; name: string }>(sql`
+		SELECT i.steam_id AS "steamId", s.name
+		  FROM jsonb_array_elements_text(${json(ids)}) AS i(steam_id)
+		 CROSS JOIN LATERAL (SELECT name FROM player_sessions p
+		                      WHERE p.steam_id = i.steam_id AND p.server_id IN ${serverIds}
+		                      ORDER BY p.joined_at DESC LIMIT 1) s`);
+	for (const r of rows) out.set(r.steamId, r.name);
+	return out;
+}
+
 /** Which of these SteamIDs have never had a session on this server (a read; call before the transaction). */
 export async function firstVisits(
 	db: DbOrTx,

@@ -128,8 +128,10 @@
 						<td class="whitespace-nowrap">{fmtTime(m.startedAt)}</td>
 						{#if multiServer}<td>{m.serverName}</td>{/if}
 						<td>
-							{#if matchHref}<a href={matchHref(m)} class="hover:text-accent hover:underline"
-									>{m.map ? mapName(m.map) : 'Match'}</a
+							{#if matchHref}<a
+									href={matchHref(m)}
+									data-sveltekit-preload-data="tap"
+									class="hover:text-accent hover:underline">{m.map ? mapName(m.map) : 'Match'}</a
 								>{:else}{m.map ? mapName(m.map) : '—'}{/if}
 						</td>
 						<td>{m.faction || '—'}</td>

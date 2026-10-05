@@ -331,6 +331,7 @@
 							<SteamName profile={steam[b.steamId]} class="max-w-[240px] font-medium" />
 							<a
 								href="/server/{encodeURIComponent(id)}/players/{b.steamId}"
+								data-sveltekit-preload-data="tap"
 								class="block font-mono text-[12.5px] hover:text-accent hover:underline"
 								title="Open dossier"
 								onclick={(e) => e.stopPropagation()}>{b.steamId}</a

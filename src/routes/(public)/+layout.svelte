@@ -69,5 +69,13 @@
 			>{data.appName}</a
 		>. Map imagery &copy; BULKHEAD, from the official WARDOGS RCON console; not affiliated with
 		BULKHEAD or Team17.
+		{#if data.supportUrl}
+			<a
+				href={data.supportUrl}
+				target="_blank"
+				rel="noopener noreferrer"
+				class="font-semibold text-accent hover:underline">Support {data.appName}</a
+			>
+		{/if}
 	</footer>
 </div>

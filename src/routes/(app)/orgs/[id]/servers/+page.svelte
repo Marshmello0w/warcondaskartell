@@ -17,9 +17,15 @@
 	let live = $state<Record<string, LiveView>>({});
 	$effect(() => {
 		const ids = data.orgServers.map((s) => s.id);
-		return watchLive(ids, (v) => {
-			live[v.serverId] = v;
-		});
+		return watchLive(
+			ids,
+			(v) => {
+				live[v.serverId] = v;
+			},
+			undefined,
+			undefined,
+			{ org: data.org.id }
+		);
 	});
 
 	let q = $state('');

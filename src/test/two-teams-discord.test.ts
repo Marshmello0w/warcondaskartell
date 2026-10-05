@@ -53,8 +53,7 @@ describe.skipIf(!hasTestDb)('Two-team mode on Discord', () => {
 
 	test('moves that land stay off Discord; one that fails, and other rules, are posted', async () => {
 		posts.length = 0;
-		for (let i = 0; i < 20; i++)
-			await delivery('trigger.two_teams', 'ok', 'Moved to Valkyra and killed.');
+		for (let i = 0; i < 20; i++) await delivery('trigger.two_teams', 'ok', 'Moved to Valkyra.');
 		await delivery('trigger.two_teams', 'error', 'The player is not on the server.');
 		await delivery('trigger.welcome', 'ok', 'Whispered.');
 		await new Promise((r) => setTimeout(r, 2000));

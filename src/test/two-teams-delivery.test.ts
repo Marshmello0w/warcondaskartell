@@ -1,5 +1,5 @@
 // Two-team mode at delivery: a second move for a player never goes out on the player list the first
-// was checked against (moving, and killing, someone twice is not harmless), and a rule that changes
+// was checked against (moving someone twice is not harmless), and a rule that changes
 // drops the moves it queued under its old settings, including ones that reach the outbox after it.
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { join } from 'node:path';
@@ -50,10 +50,6 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 	let spy: ReturnType<typeof spyOn>;
 	let renewing: ReturnType<typeof setInterval>;
 	const requests: string[] = [];
-	/** when each request reached the stand-in game */
-	const times: number[] = [];
-	/** players whose kill the stand-in game refuses for sending too fast */
-	const refuseKillOf = new Set<string>();
 	/** the server's Two-team rule, closing Lonestar, whose moves these rows are */
 	let ruleId: string;
 
@@ -82,17 +78,6 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 				({
 					json: async (method: string, path: string) => {
 						requests.push(`${method} ${path}`);
-						times.push(Date.now());
-						const killOf = /^\/v1\/players\/(\d+)\/kill$/.exec(path)?.[1];
-						if (method === 'POST' && killOf && refuseKillOf.has(killOf)) {
-							const err = new GameError(
-								429,
-								'The game server is rate limiting this panel (Request rate exceeded); retry in 2 s.',
-								'rate_limited'
-							);
-							err.retryAfterMs = 2000;
-							throw err;
-						}
 						return { ok: true };
 					}
 				}) as unknown as WardogsClient
@@ -118,7 +103,7 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		triggerName: 'Two teams',
 		triggerKind: 'two_teams',
 		action: 'changeTeam',
-		params: { steamId, faction: 'Valkyra', from: 'Lonestar', rule: DECIDED },
+		params: { steamId, faction: 'Valkyra', kill: false, from: 'Lonestar', rule: DECIDED },
 		target: steamId,
 		steamId,
 		okMessage: 'Moved.',
@@ -134,7 +119,7 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		}
 	};
 
-	test('Clan teams uses move-then-kill, cancels renamed players and never sends watch-only rows', async () => {
+	test('Clan teams moves without an extra kill, cancels renamed players and never sends watch-only rows', async () => {
 		await stopDelivery();
 		forgetRuleMemory();
 		const config = validateClanTeams({});
@@ -188,10 +173,7 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		const before = requests.length;
 		startDelivery(env);
 		await until(async () => (await rowsOf(ids)).every((r) => r.doneAt !== null));
-		expect(requests.slice(before)).toEqual([
-			`PATCH /v1/players/${B}`,
-			`POST /v1/players/${B}/kill`
-		]);
+		expect(requests.slice(before)).toEqual([`PATCH /v1/players/${B}`]);
 		expect((await rowsOf(ids)).map((r) => r.state)).toEqual(['delivered', 'skipped']);
 		expect((await rowsOf(ids))[1].outcome).toBe('Clan tag changed before the move.');
 		await stopDelivery();
@@ -223,7 +205,6 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		invalidateTriggers(w.server.id);
 		forgetRuleMemory();
 		requests.length = 0;
-		times.length = 0;
 	}, 30_000);
 
 	test('a second move waits for a newer player list, then goes only if the first did not land', async () => {
@@ -234,7 +215,13 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		const ids = (
 			await env.db
 				.insert(outbox)
-				.values([move(X), move(Y), move(X), move(Y)])
+				.values([
+					// A move queued by the old version still has kill:true; upgrade delivery overrides it.
+					{ ...move(X), params: { ...move(X).params, kill: true } },
+					move(Y),
+					move(X),
+					move(Y)
+				])
 				.returning({ id: outbox.id })
 		).map((r) => r.id);
 		startDelivery(env);
@@ -252,12 +239,7 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 			'pending',
 			'pending'
 		]);
-		expect(requests).toEqual([
-			`PATCH /v1/players/${X}`,
-			`POST /v1/players/${X}/kill`,
-			`PATCH /v1/players/${Y}`,
-			`POST /v1/players/${Y}/kill`
-		]);
+		expect(requests).toEqual([`PATCH /v1/players/${X}`, `PATCH /v1/players/${Y}`]);
 		// The next list: X landed, Y did not.
 		m.players = [on(X, 'Valkyra'), on(Y, 'Lonestar')];
 		m.playersAt = Date.now();
@@ -265,9 +247,9 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 		const rows = await rowsOf(ids);
 		expect(rows.slice(2).map((r) => [r.state, r.outcome])).toEqual([
 			['skipped', 'Already off Lonestar.'],
-			['delivered', 'Moved to Valkyra and killed, so they respawn on the new side.']
+			['delivered', 'Moved to Valkyra.']
 		]);
-		expect(requests.slice(4)).toEqual([`PATCH /v1/players/${Y}`, `POST /v1/players/${Y}/kill`]);
+		expect(requests.slice(2)).toEqual([`PATCH /v1/players/${Y}`]);
 		await stopDelivery();
 	}, 30_000);
 
@@ -350,14 +332,10 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 			expect((await rowsOf(ids)).map((r) => [r.state, r.outcome])).toEqual([
 				['skipped', 'No longer wanted by the rule.'],
 				// A is on Valkyra in these lists, so B goes to Manticore
-				['delivered', 'Moved to Manticore and killed, so they respawn on the new side.']
+				['delivered', 'Moved to Manticore.']
 			]);
-			expect(requests.slice(from)).toEqual([
-				`PATCH /v1/players/${A}`,
-				`POST /v1/players/${A}/kill`,
-				`PATCH /v1/players/${B}`,
-				`POST /v1/players/${B}/kill`
-			]);
+			// the rule's moves go out alone, without the kill
+			expect(requests.slice(from)).toEqual([`PATCH /v1/players/${A}`, `PATCH /v1/players/${B}`]);
 		} finally {
 			await stopDelivery();
 			forgetRuleMemory();
@@ -386,50 +364,10 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 			await until(async () => (await rowsOf(ids)).every((r) => r.doneAt !== null));
 			expect((await rowsOf(ids)).map((r) => [r.state, r.outcome])).toEqual([
 				['skipped', 'The rule was changed before this was sent.'],
-				['delivered', 'Moved to Valkyra and killed, so they respawn on the new side.']
+				['delivered', 'Moved to Valkyra.']
 			]);
-			expect(requests.slice(from)).toEqual([
-				`PATCH /v1/players/${D}`,
-				`POST /v1/players/${D}/kill`
-			]);
+			expect(requests.slice(from)).toEqual([`PATCH /v1/players/${D}`]);
 		} finally {
-			await stopDelivery();
-		}
-	}, 30_000);
-
-	test('a move whose kill is refused for sending too fast says so, and holds the server', async () => {
-		const m = memoryOf(w.server.id)!;
-		m.players = [on(X, 'Lonestar'), on(Y, 'Lonestar')];
-		m.playersAt = Date.now();
-		refuseKillOf.add(X);
-		const from = requests.length;
-		try {
-			const ids = (
-				await env.db
-					.insert(outbox)
-					.values([move(X), move(Y)])
-					.returning({ id: outbox.id })
-			).map((r) => r.id);
-			startDelivery(env);
-			await until(async () => (await rowsOf(ids)).every((r) => r.doneAt !== null));
-			const rows = await rowsOf(ids);
-			expect(rows.map((r) => [r.state, r.outcome])).toEqual([
-				[
-					'delivered',
-					'Moved to Valkyra. The game refused the kill for sending too fast, so they stay where they are until they next die.'
-				],
-				['delivered', 'Moved to Valkyra and killed, so they respawn on the new side.']
-			]);
-			expect(requests.slice(from)).toEqual([
-				`PATCH /v1/players/${X}`,
-				`POST /v1/players/${X}/kill`,
-				`PATCH /v1/players/${Y}`,
-				`POST /v1/players/${Y}/kill`
-			]);
-			// Y's move waited out the two seconds the game asked for.
-			expect(times[from + 2] - times[from + 1]).toBeGreaterThanOrEqual(1900);
-		} finally {
-			refuseKillOf.clear();
 			await stopDelivery();
 		}
 	}, 30_000);
@@ -596,10 +534,7 @@ describe.skipIf(!hasTestDb)('Two-team mode at delivery', () => {
 			await until(async () => (await rowsOf([id]))[0].doneAt !== null);
 			const [row] = await rowsOf([id]);
 			expect(failed).toBe(true);
-			expect([row.state, row.outcome]).toEqual([
-				'delivered',
-				'Moved to Valkyra and killed, so they respawn on the new side.'
-			]);
+			expect([row.state, row.outcome]).toEqual(['delivered', 'Moved to Valkyra.']);
 			expect(row.attempts).toBeGreaterThan(1);
 			const trail = await env.db
 				.select({ message: auditLog.message })

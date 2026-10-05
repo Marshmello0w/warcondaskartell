@@ -37,6 +37,7 @@ import { clanTag } from './two-teams';
 import { KILL_DISTANCE_FLAG } from './kill-distance';
 import { writeAudit } from './audit';
 import { PANEL_BAN, type PanelBanParams } from './rule-ban';
+import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import type { OutboxView } from '$lib/types';
@@ -295,8 +296,12 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 		return 'Player already left.';
 	if (row.action === 'empty_reset' && (m.players.length > 0 || (m.status?.playerCount ?? 0) > 0))
 		return 'Players arrived before the reset.';
+	// A rule's kill goes soon or not at all (a player off the list at a map change waits for no
+	// longer than this either).
+	if (row.action === RULE_KILL && age > RULE_KILL_MAX_AGE_MS)
+		return `Stale (${Math.round(age / 1000)}s old).`;
 	// A Team balance move for a player already off the side it was decided from: the move before it
-	// landed, or they changed side themselves. Moving (and killing) someone twice is not harmless.
+	// landed, or they changed side themselves. Moving someone twice is not harmless.
 	if (isTeamMoveRule(row.triggerKind) && row.action === 'changeTeam') {
 		const params = row.params as { from?: string; clan?: string } | null;
 		const from = params?.from;
@@ -447,7 +452,7 @@ async function release(env: Env, row: OutboxRow): Promise<void> {
 /**
  * Sends one row and records what happened. 'held': the server is held and this row was not sent;
  * 'refused': the game refused this row, or a later step of it, for sending too fast (a refused row
- * is failed; a move whose kill was refused is delivered) and the server is now held. Either way
+ * is failed; a rule kill whose whisper was refused is delivered) and the server is now held. Either way
  * the chain puts the rest back.
  */
 async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' | void> {
@@ -501,9 +506,11 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 			env,
 			row,
 			'delivered',
-			(!OWN_WORDS.has(row.action) && messageOf(result)) || row.okMessage
+			((row.action === RULE_KILL || !OWN_WORDS.has(row.action)) && messageOf(result)) ||
+				row.okMessage
 		);
-		// Done, but a later step was refused for sending too fast (changeTeam's kill): hold the rest.
+		// Done, but a later step was refused for sending too fast (a rule kill's whisper): hold the
+		// rest.
 		const wait = retryAfterOf(result);
 		if (wait) {
 			held.set(row.serverId, Math.max(held.get(row.serverId) ?? 0, Date.now() + wait));
@@ -720,18 +727,19 @@ async function deliverPanelBan(env: Env, row: OutboxRow): Promise<void> {
 	}
 }
 
-/** The wait an action's answer asks for (changeTeam's refused kill), or 0. */
+/** The wait an action's answer asks for (a later step refused for sending too fast), or 0. */
 const retryAfterOf = (r: unknown): number =>
 	r && typeof r === 'object' && typeof (r as { retryAfterMs?: unknown }).retryAfterMs === 'number'
 		? (r as { retryAfterMs: number }).retryAfterMs
 		: 0;
 
 /**
- * A rule's whisper or kick carries what it tells one player, their stats across the organisation
- * among it: what became of it is told in the panel's own words, never the game's, which staff of
- * this server read (Recent actions, the audit trail, Discord) and which might repeat the text.
+ * A rule's whisper, kick or kill carries what it tells one player, their stats across the
+ * organisation among it: what became of it is told in the panel's own words, never the game's,
+ * which staff of this server read (Recent actions, the audit trail, Discord) and which might repeat
+ * the text. A kill says in its own fixed words whether the player was killed and told.
  */
-const OWN_WORDS = new Set(['whisper', 'kick']);
+const OWN_WORDS = new Set(['whisper', 'kick', RULE_KILL]);
 
 /** Why the game refused a whisper or kick, as a fixed phrase: its status and its code. */
 function refusal(err: unknown): string {
@@ -754,6 +762,10 @@ const messageOf = (r: unknown): string =>
 /** Runs the row's action; "empty_reset" decides between a rotation edit and a direct change. */
 async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> {
 	const params = (row.params as Record<string, unknown>) ?? {};
+	if (row.action === RULE_KILL) return killAndTell(client, params);
+	// Include rows queued before the upgrade: automatic team moves never add a kill request.
+	if (isTeamMoveRule(row.triggerKind) && row.action === 'changeTeam')
+		return ACTIONS.changeTeam.run(client, { ...params, kill: false });
 	if (row.action === 'empty_reset') {
 		let rotationOn = false;
 		try {
@@ -822,11 +834,14 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 // ---- reads --------------------------------------------------------------------------------------
 
 export async function recentOutbox(env: Env, serverId: string, limit = 30): Promise<OutboxView[]> {
+	// Newest first in the order outbox_server_idx keeps (created_at DESC NULLS LAST, as Drizzle
+	// writes it): by id the read walked the whole outbox, kept for good, back to the server's last
+	// row, which on a quiet server is most of the table.
 	const rows = await env.db
 		.select()
 		.from(outbox)
 		.where(eq(outbox.serverId, serverId))
-		.orderBy(desc(outbox.id))
+		.orderBy(sql`${outbox.createdAt} desc nulls last`, desc(outbox.id))
 		.limit(limit);
 	return rows.map((r) => ({
 		id: r.id,

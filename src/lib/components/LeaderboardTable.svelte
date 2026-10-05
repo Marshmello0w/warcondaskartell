@@ -156,7 +156,11 @@
 				<tr>
 					<td class="num text-mist-400">{r.rank}</td>
 					<td>
-						<a href={hrefFor(r.steamId)} class="hover:text-accent hover:underline">{r.name}</a>
+						<a
+							href={hrefFor(r.steamId)}
+							data-sveltekit-preload-data="tap"
+							class="hover:text-accent hover:underline">{r.name}</a
+						>
 						{#if showIds}<span class="font-mono text-[12px] text-mist-600">{r.steamId}</span>{/if}
 					</td>
 					<td class="num">{fmtMinutes(r.minutes)}</td>

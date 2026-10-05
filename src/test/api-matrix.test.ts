@@ -4,7 +4,7 @@
 // database behind them; the game server is a stub, so "ok" means the check let the request by.
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import type { Env } from '$lib/server/env';
 import { hasTestDb, testEnv } from './db';
 import { callApi, stubGateway } from './call';
@@ -195,7 +195,7 @@ function routeFiles(dir: string): string[] {
 }
 
 const onDisk = routeFiles(ROUTES).flatMap((file) => {
-	const path = relative(ROUTES, join(file, '..'));
+	const path = relative(ROUTES, join(file, '..')).split(sep).join('/');
 	const methods = readFileSync(file, 'utf8').matchAll(
 		/^export const (GET|POST|PUT|PATCH|DELETE)\b/gm
 	);

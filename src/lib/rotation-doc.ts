@@ -40,6 +40,34 @@ export function formatRotationEntry(e: MapSelection): string {
 	return `(${parts.join(',')})`;
 }
 
+/**
+ * Every entry with a modifier (`KOTH_InfantryOnly`) added or taken off. It is added after the
+ * entry's game mode and only where `offered(map)` says the map has it, and not taken off an entry
+ * it is the only experience of (that would leave no game mode); `skipped` counts those.
+ */
+export function setModifierOnAll(
+	entries: MapSelection[],
+	mod: string,
+	on: boolean,
+	offered: (map: string) => boolean
+): { entries: MapSelection[]; changed: number; skipped: number } {
+	const is = (id: string) => id.toLowerCase() === mod.toLowerCase();
+	let changed = 0;
+	let skipped = 0;
+	const next = entries.map((e) => {
+		const has = e.experiences.some(is);
+		if (on === has) return e;
+		const experiences = on ? [...e.experiences, mod] : e.experiences.filter((id) => !is(id));
+		if (on ? !offered(e.map) : !experiences.length) {
+			skipped++;
+			return e;
+		}
+		changed++;
+		return { ...e, experiences };
+	});
+	return { entries: next, changed, skipped };
+}
+
 export function rotationFromText(text: string): RotationDoc {
 	const doc = parseIni(text);
 	const enabled = getScalar(doc, S_ROTATION, 'bEnabled');

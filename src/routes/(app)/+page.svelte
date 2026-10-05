@@ -26,7 +26,7 @@
 
 	$effect(() => {
 		const ids = data.servers.map((s) => s.id);
-		return watchLive(ids, onLive);
+		return watchLive(ids, onLive, undefined, undefined, { org: data.scope?.id ?? null });
 	});
 
 	// ── Sorting and filtering ─────────────────────────────────────────────────────────────

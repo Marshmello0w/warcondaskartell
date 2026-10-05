@@ -340,4 +340,12 @@
 <footer class="page-x pb-6 text-[12px] text-mist-600">
 	Map imagery &copy; BULKHEAD, from the official WARDOGS RCON console. Warcon is a community tool
 	and is not affiliated with BULKHEAD or Team17.
+	{#if data.supportUrl}
+		<a
+			href={data.supportUrl}
+			target="_blank"
+			rel="noopener noreferrer"
+			class="font-semibold text-accent hover:underline">Support {data.appName}</a
+		>
+	{/if}
 </footer>

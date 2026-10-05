@@ -5,7 +5,7 @@
 // each sample covers the time until the next one (capped, so a lone sample before a long gap
 // does not claim hours), averages weight player counts by that cover, uptime is covered-up time
 // over covered time, and session minutes come straight from joined_at and left_at.
-import { and, count, desc, eq, gte, isNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { Env } from './env';
 import { matches, playerSessions, servers } from './db/schema';
 import { settings } from './settings';
@@ -184,12 +184,17 @@ const isoOf = (v: unknown): string =>
 /**
  * The samples in range with the seconds each one covers (until the next, or now, capped):
  * ts, ok, player_count (weighted), peak, max_players, map, dur, n (samples represented).
+ * `from` may be SQL (the rollups' cut): LEAD only looks forward, so starting the read there gives
+ * every row after it the same cover as reading the whole range would.
  */
-const rawRows = (serverId: string, from: Date) => sql`
+const rawRows = (serverId: string, from: Date | SQL) => sql`
 	SELECT ts, ok, player_count::float AS player_count, player_count AS peak, max_players, map,
 	       LEAST(${MAX_COVER_S}, EXTRACT(EPOCH FROM (COALESCE(LEAD(ts) OVER (ORDER BY ts), now()) - ts))) AS dur,
 	       1 AS n
 	  FROM samples WHERE server_id = ${serverId} AND ts >= ${from}`;
+
+/** Where the hourly rollups stop: the raw rows take over from here (a scalar the index can use). */
+const CUT = sql`(SELECT t FROM cut)`;
 
 /** The same shape from the hourly rollups up to their newest bucket, then raw samples. */
 const rolledRows = (serverId: string, from: Date) => sql`
@@ -203,7 +208,7 @@ const rolledRows = (serverId: string, from: Date) => sql`
 	  FROM sample_rollups r, cut WHERE r.server_id = ${serverId} AND r.bucket >= ${from} AND r.bucket < cut.t AND r.down_s > 0
 	UNION ALL
 	SELECT x.ts, x.ok, x.player_count, x.peak, x.max_players, x.map, x.dur, x.n
-	  FROM (${rawRows(serverId, from)}) x, cut WHERE x.ts >= cut.t`;
+	  FROM (${rawRows(serverId, CUT)}) x`;
 
 /** Map cover in range: rollups up to their newest bucket, then raw samples. */
 const mapRows = (serverId: string, from: Date, rolled: boolean) =>
@@ -214,8 +219,8 @@ const mapRows = (serverId: string, from: Date, rolled: boolean) =>
 	SELECT map, secs FROM sample_map_rollups, cut
 	 WHERE server_id = ${serverId} AND bucket >= ${from} AND bucket < cut.t
 	UNION ALL
-	SELECT x.map, x.dur FROM (${rawRows(serverId, from)}) x, cut
-	 WHERE x.ts >= cut.t AND x.ok AND x.map IS NOT NULL AND x.map <> ''`
+	SELECT x.map, x.dur FROM (${rawRows(serverId, CUT)}) x
+	 WHERE x.ok AND x.map IS NOT NULL AND x.map <> ''`
 		: sql`
 	SELECT x.map, x.dur AS secs FROM (${rawRows(serverId, from)}) x
 	 WHERE x.ok AND x.map IS NOT NULL AND x.map <> ''`;
@@ -299,11 +304,12 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 		online: string;
 	}>(sql`
 				SELECT p.steam_id AS "steamId",
-				       (SELECT name FROM player_sessions p2 WHERE p2.steam_id = p.steam_id AND p2.server_id = p.server_id ORDER BY last_seen DESC LIMIT 1) AS name,
+				       (ARRAY_AGG(p.name ORDER BY p.last_seen DESC))[1] AS name,
 				       SUM(EXTRACT(EPOCH FROM (COALESCE(p.left_at, now()) - GREATEST(p.joined_at, ${from}::timestamptz)))) / 60 AS minutes,
 				       COUNT(*) AS sessions,
 				       MAX(p.last_seen) AS "lastSeen", COUNT(*) FILTER (WHERE p.left_at IS NULL) AS online
 				  FROM player_sessions p WHERE p.server_id = ${serverId} AND p.last_seen >= ${from}
+				   AND (p.left_at IS NULL OR p.left_at >= ${from})
 				 GROUP BY p.server_id, p.steam_id ORDER BY minutes DESC LIMIT 50`)) as {
 		steamId: string;
 		name: string;
@@ -320,6 +326,7 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 				SELECT p.steam_id AS "steamId", SUM(p.kills) AS kills, SUM(p.deaths) AS deaths
 				  FROM match_players p JOIN matches m ON m.id = p.match_id
 				 WHERE p.server_id = ${serverId} AND p.steam_id IN ${seen.map((s) => s.steamId)}
+				   AND m.server_id = ${serverId}
 				   AND m.ended_at IS NOT NULL AND m.ended_at >= ${from}
 				 GROUP BY p.steam_id`))
 			recorded.set(r.steamId, { kills: num(r.kills), deaths: num(r.deaths) });
@@ -337,7 +344,13 @@ export async function loadAnalytics(env: Env, serverId: string, range: Range): P
 	const [unique] = await db
 		.select({ n: sql<number>`COUNT(DISTINCT ${playerSessions.steamId})` })
 		.from(playerSessions)
-		.where(and(eq(playerSessions.serverId, serverId), gte(playerSessions.lastSeen, from)));
+		.where(
+			and(
+				eq(playerSessions.serverId, serverId),
+				gte(playerSessions.lastSeen, from),
+				or(isNull(playerSessions.leftAt), gte(playerSessions.leftAt, from))
+			)
+		);
 	const [online] = await db
 		.select({ n: count() })
 		.from(playerSessions)
@@ -531,7 +544,8 @@ export async function loadPeriods(
 			       width_bucket(p.last_seen, w.starts) - 1 AS b, width_bucket(p.left_at, w.starts) - 1 AS e,
 			       date_part('epoch', p.left_at - p.joined_at) AS secs
 			  FROM player_sessions p, w
-			 WHERE p.server_id = ${serverId} AND p.last_seen >= w.starts[1]),
+			 WHERE p.server_id = ${serverId} AND p.last_seen >= w.starts[1]
+			   AND (p.left_at IS NULL OR p.left_at >= w.starts[1])),
 		present AS (
 			SELECT k, COUNT(*) AS players
 			  FROM (SELECT DISTINCT k, s.steam_id FROM s, generate_series(GREATEST(s.a, 0), s.b) k) x
@@ -693,7 +707,7 @@ export async function loadCashSince(
 	const rows = await env.db.execute<{ ts: Date; cash: { name: string; cash: number }[] }>(sql`
 			SELECT ts, cash FROM samples
 			 WHERE server_id = ${serverId} AND ts >= ${since} AND ok AND cash IS NOT NULL
-			 ORDER BY ts DESC LIMIT ${limit}`);
+			 ORDER BY ts DESC NULLS LAST LIMIT ${limit}`);
 	return rows.reverse().map((r) => {
 		const point: CashPoint = { ts: isoOf(r.ts), total: 0, factions: {} };
 		for (const c of Array.isArray(r.cash) ? r.cash : []) addCash(point, c.name ?? '', num(c.cash));

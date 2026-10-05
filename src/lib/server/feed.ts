@@ -479,7 +479,12 @@ export async function recentKills(
 		.select()
 		.from(kills)
 		.where(killWhere(serverId, before, filter, match))
-		.orderBy(desc(kills.ts), desc(kills.eventTime), desc(sql`${kills.eventId} COLLATE "C"`))
+		// Match the server/time index, with stable tie breakers for feed pagination.
+		.orderBy(
+			sql`${kills.ts} desc nulls last`,
+			desc(kills.eventTime),
+			desc(sql`${kills.eventId} COLLATE "C"`)
+		)
 		.limit(limit);
 	return rows.map(killView);
 }

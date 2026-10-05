@@ -38,6 +38,7 @@ import {
 import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
 import { requireSteamId } from './steam';
 import { desiredFor, memberSlots, summaryOf } from './lists-sync';
+import { latestNames } from './sessions';
 import { gateway } from './gateway';
 import type {
 	ImportCandidate,
@@ -190,14 +191,7 @@ export async function namesFor(
 	const out = new Map<string, string>();
 	const ids = [...new Set(steamIds)];
 	if (!ids.length) return out;
-	if (serverIds.length) {
-		const rows = await env.db.execute<{ steamId: string; name: string }>(sql`
-			SELECT DISTINCT ON (steam_id) steam_id AS "steamId", name
-			  FROM player_sessions
-			 WHERE server_id IN ${serverIds} AND steam_id IN ${ids}
-			 ORDER BY steam_id, last_seen DESC`);
-		for (const r of rows) out.set(r.steamId, r.name);
-	}
+	for (const [steamId, name] of await latestNames(env.db, serverIds, ids)) out.set(steamId, name);
 	const missing = ids.filter((id) => !out.has(id));
 	if (missing.length) {
 		const rows = await env.db

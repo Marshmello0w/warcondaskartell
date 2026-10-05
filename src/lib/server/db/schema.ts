@@ -8,6 +8,7 @@ import {
 	customType,
 	index,
 	integer,
+	numeric,
 	pgTable,
 	primaryKey,
 	real,
@@ -390,7 +391,11 @@ export const auditLog = pgTable(
 		index('audit_server_idx').on(t.serverId, t.id),
 		index('audit_org_idx').on(t.orgId, t.id),
 		index('audit_actor_idx').on(t.actorId, t.id),
-		index('audit_action_idx').on(t.category, t.action)
+		index('audit_action_idx').on(t.category, t.action),
+		/** a player's history on the dossier (target is their SteamID); rows without a target stay out */
+		index('audit_target_idx')
+			.on(t.target, t.id)
+			.where(sql`${t.target} <> ''`)
 	]
 );
 
@@ -450,9 +455,12 @@ export const playerSessions = pgTable(
 		 *  threshold (0 while no seeding rule is on); what a Seeding reward rule adds up */
 		seedSeconds: integer('seed_seconds').notNull().default(0)
 	},
+	// last_seen has no index on purpose: the heartbeat rewrites it for everyone online every 30 s,
+	// and an indexed column would make each of those rewrites a new entry in every index. A read of
+	// "seen since" adds (left_at IS NULL OR left_at >= since), which closing a session makes
+	// equivalent (it sets last_seen = left_at), and the open index serves that (migration 0037).
 	(t) => [
 		index('player_sessions_open_idx').on(t.serverId, t.leftAt),
-		index('player_sessions_seen_idx').on(t.serverId, t.lastSeen),
 		index('player_sessions_steam_idx').on(t.steamId, t.joinedAt)
 	]
 );
@@ -474,7 +482,13 @@ export const matches = pgTable(
 		finalScores: jsonb('final_scores'),
 		winner: text('winner')
 	},
-	(t) => [index('matches_server_idx').on(t.serverId, t.startedAt)]
+	(t) => [
+		index('matches_server_idx').on(t.serverId, t.startedAt),
+		/** the match in progress, which every status look and kill batch reads: one entry per server */
+		index('matches_open_idx')
+			.on(t.serverId, t.id)
+			.where(sql`${t.endedAt} is null`)
+	]
 );
 
 /**
@@ -606,6 +620,45 @@ export const matchPlayers = pgTable(
 	]
 );
 export type MatchPlayerRow = typeof matchPlayers.$inferSelect;
+
+/**
+ * Each player's settled totals on a server, for the all-time reads (boards and their export,
+ * career ranks, the placeholders' stats, the risk record), which add the open sessions: the sums
+ * of the player's closed sessions and of their lines of ended matches, with the boards' result
+ * rule. A row exists while the pair has either. Kept by triggers on player_sessions, matches and
+ * match_players in the writer's own transaction, whoever the writer is (migration 0039 holds the
+ * rules); the application only reads it, and takes player_totals_lock(server) before it closes a
+ * session, ends a match or purges (totals.ts).
+ */
+export const playerTotals = pgTable(
+	'player_totals',
+	{
+		serverId: text('server_id').notNull(),
+		steamId: text('steam_id').notNull(),
+		/** closed sessions */
+		sessions: integer('sessions').notNull().default(0),
+		/** SUM(EXTRACT(EPOCH FROM left_at - joined_at)) over them, exact */
+		seconds: numeric('seconds').notNull().default('0'),
+		seedSeconds: bigint('seed_seconds', { mode: 'number' }).notNull().default(0),
+		cash: bigint('cash', { mode: 'number' }).notNull().default(0),
+		/** MAX(last_seen) over them; null without one */
+		lastSeen: ts('last_seen'),
+		/** lines of ended matches */
+		matches: integer('matches').notNull().default(0),
+		kills: bigint('kills', { mode: 'number' }).notNull().default(0),
+		deaths: bigint('deaths', { mode: 'number' }).notNull().default(0),
+		headshots: bigint('headshots', { mode: 'number' }).notNull().default(0),
+		teamKills: bigint('team_kills', { mode: 'number' }).notNull().default(0),
+		suicides: bigint('suicides', { mode: 'number' }).notNull().default(0),
+		vehicleKills: bigint('vehicle_kills', { mode: 'number' }).notNull().default(0),
+		killStreak: integer('kill_streak').notNull().default(0),
+		deathStreak: integer('death_streak').notNull().default(0),
+		wins: integer('wins').notNull().default(0),
+		losses: integer('losses').notNull().default(0),
+		draws: integer('draws').notNull().default(0)
+	},
+	(t) => [primaryKey({ columns: [t.serverId, t.steamId] })]
+);
 
 // ---- Player intelligence: org-scoped notes and watchlist, cached Steam data, ban snapshots ------
 
@@ -919,7 +972,11 @@ export const listEntries = pgTable(
 			.on(t.listId, t.steamId)
 			.where(sql`${t.removedAt} is null`),
 		index('list_entries_list_idx').on(t.listId, t.removedAt),
-		index('list_entries_steam_idx').on(t.steamId)
+		index('list_entries_steam_idx').on(t.steamId),
+		/** bans with an end date still in force: the worker looks for lapsed ones every few seconds */
+		index('list_entries_expiry_idx')
+			.on(t.expiresAt)
+			.where(sql`${t.removedAt} is null and ${t.expiresAt} is not null`)
 	]
 );
 
@@ -1060,7 +1117,10 @@ export const outbox = pgTable(
 	},
 	(t) => [
 		uniqueIndex('outbox_dedupe_idx').on(t.dedupeKey),
-		index('outbox_pending_idx').on(t.state, t.notBefore),
+		/** the rows still to deliver; finished rows, kept for good, stay out of it */
+		index('outbox_pending_idx')
+			.on(t.state, t.notBefore)
+			.where(sql`${t.state} in ('pending', 'sending')`),
 		index('outbox_server_idx').on(t.serverId, t.createdAt.desc())
 	]
 );

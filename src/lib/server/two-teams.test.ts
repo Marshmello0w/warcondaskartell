@@ -7,6 +7,7 @@ import {
 	TWO_TEAMS_MAX_ASKS,
 	TWO_TEAMS_PICK_HOLD_MS,
 	TWO_TEAMS_RETRY_MS,
+	TWO_TEAMS_SETTLED_MS,
 	TWO_TEAMS_SIDE_FORGET_MS,
 	TWO_TEAMS_STAFF_MOVE_MS,
 	teamName,
@@ -269,6 +270,55 @@ describe('twoTeamsStep balancing', () => {
 		expect(helper.state.sides.get('v0')?.side).toBe(M);
 	});
 
+	test('put-backs respect the shared 15-second retry and ten-attempt budget until settled', () => {
+		const players = [...side('v', 7, V), ...side('m', 5, M)];
+		const onV = players.map((x) => (x.steamId === 'm0' ? { ...x, faction: V } : x));
+		let state = seeded(players);
+		for (let i = 0; i < TWO_TEAMS_MAX_ASKS; i++) {
+			// onto Valkyra again, eight against four
+			const at = 1000 + i * TWO_TEAMS_RETRY_MS;
+			const r = bal(state, onV, at);
+			expect(r.moves.map((m) => [m.steamId, m.to, m.why])).toEqual([['m0', M, 'back']]);
+			expect(r.stopped).toEqual([]);
+			// and the put-back lands
+			state = bal(r.state, players, at + 1000).state;
+			// A brief confirmed placement does not allow another move before 15 seconds.
+			const early = bal(state, onV, at + TWO_TEAMS_RETRY_MS - 1);
+			expect(early.moves).toEqual([]);
+			state = early.state;
+		}
+		const capped = bal(state, onV, 1000 + TWO_TEAMS_MAX_ASKS * TWO_TEAMS_RETRY_MS);
+		expect(capped.moves).toEqual([]);
+		expect(capped.stopped.map((p) => p.steamId)).toEqual(['m0']);
+		const at = 200_000;
+		const landed = bal(capped.state, players, at).state;
+		const brief = bal(landed, players, at + TWO_TEAMS_SETTLED_MS - 1).state;
+		expect(brief.asked.get('m0')).toHaveLength(TWO_TEAMS_MAX_ASKS);
+		const settled = bal(brief, players, at + TWO_TEAMS_SETTLED_MS).state;
+		expect(settled.asked.has('m0')).toBe(false);
+		expect(settled.backs.has('m0')).toBe(false);
+		expect(bal(settled, onV, at + TWO_TEAMS_SETTLED_MS + 1000).moves.map((p) => p.why)).toEqual([
+			'back'
+		]);
+	});
+
+	test('a put-back the game does not carry out is asked ten times in ten minutes at most', () => {
+		const players = [...side('v', 7, V), ...side('m', 5, M)];
+		const onV = players.map((x) => (x.steamId === 'm0' ? { ...x, faction: V } : x));
+		let state = seeded(players);
+		const whys: string[] = [];
+		const stopped: string[] = [];
+		// still on Valkyra at every look, each a retry's wait after the one before
+		for (let i = 0; i < 2 * TWO_TEAMS_MAX_ASKS; i++) {
+			const r = bal(state, onV, 2000 + i * (TWO_TEAMS_RETRY_MS + 1000));
+			state = r.state;
+			whys.push(...r.moves.map((m) => m.why));
+			stopped.push(...r.stopped.map((s) => s.steamId));
+		}
+		expect(whys).toEqual(Array(TWO_TEAMS_MAX_ASKS).fill('back'));
+		expect(stopped).toEqual(['m0']);
+	});
+
 	test('a player who leaves and rejoins on the bigger side is still put back, until forgotten', () => {
 		const players = [...side('v', 7, V), ...side('m', 5, M)];
 		const others = players.filter((x) => x.steamId !== 'm0');
@@ -415,6 +465,41 @@ describe('twoTeamsStep balancing', () => {
 		expect(bal(seeded(ahead, withClans), [...ahead, arrival], 1000, {}, withClans).moves).toEqual(
 			[]
 		);
+	});
+
+	test('with clan tags kept together, a new match moves players with no clanmates beside them first', () => {
+		const withClans = { ...B, clans: true };
+		// the clan first in the list, where list order would take the moves from it
+		const players = [
+			...Array.from({ length: 6 }, (_, i) => named(`t${i}`, `[ABC] Mate${i}`, M)),
+			...side('m', 6, M),
+			...side('v', 2, V)
+		];
+		const r = bal(seeded(players, withClans), players, 1000, { newMatch: true }, withClans);
+		expect(r.moves.map((m) => [m.steamId, m.to])).toEqual([
+			['m0', V],
+			['m1', V],
+			['m2', V],
+			['m3', V]
+		]);
+	});
+
+	test('a new match moves first the clan members whose clan is on the side they are short of', () => {
+		const withClans = { ...B, clans: true };
+		// 10 v 6, two of the clan on the bigger side, five on the smaller
+		const players = [
+			...side('m', 8, M),
+			named('a0', '[ABC] One', M),
+			named('a1', '[ABC] Two', M),
+			...Array.from({ length: 5 }, (_, i) => named(`b${i}`, `[ABC] Mate${i}`, V)),
+			p('v0', V)
+		];
+		const r = bal(seeded(players, withClans), players, 1000, { newMatch: true }, withClans);
+		// joining their clan evens the sides: nobody else moves
+		expect(r.moves.map((m) => [m.steamId, m.to])).toEqual([
+			['a0', V],
+			['a1', V]
+		]);
 	});
 
 	test('clanmates arriving on opposite sides are put together with one move', () => {

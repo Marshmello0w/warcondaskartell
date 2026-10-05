@@ -35,6 +35,17 @@ test('changeTeam moves the faction then kills the player', async () => {
 	expect(r.message).toContain('respawn');
 });
 
+test('changeTeam with kill: false sends the move alone', async () => {
+	const { client, calls } = fakeClient(false);
+	const r: any = await ACTIONS.changeTeam.run(client, {
+		steamId: '76561198000000001',
+		faction: 'Valkyra',
+		kill: false
+	});
+	expect(calls).toEqual(['PATCH /v1/players/76561198000000001']);
+	expect(r.message).toBe('Moved to Valkyra.');
+});
+
 test('changeTeam tolerates a failed kill', async () => {
 	const { client, calls } = fakeClient(true);
 	const r: any = await ACTIONS.changeTeam.run(client, {

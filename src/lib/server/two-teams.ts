@@ -21,9 +21,9 @@ export const TWO_TEAMS_SETTLED_MS = 30_000;
 /** A placed player is told once; the note is forgotten after this long away, so a return next day is told again. */
 export const TWO_TEAMS_FORGET_MS = 2 * 3600_000;
 /**
- * Moves asked for per second of the player-list cadence. Each move is two game requests (move,
- * then kill), so a full server's sort at a match start goes out over half a minute instead of at
- * once, under the listener's limit on requests from one address.
+ * Moves asked for per second of the player-list cadence, so a full server's sort at a match start
+ * goes out over half a minute instead of at once, under the listener's limit on requests from one
+ * address.
  */
 export const TWO_TEAMS_MOVES_PER_SECOND = 3;
 /**
@@ -33,7 +33,8 @@ export const TWO_TEAMS_MOVES_PER_SECOND = 3;
 export const TWO_TEAMS_MAX_MOVES_PER_LOOK = 6;
 /**
  * A player asked to move this many times within TWO_TEAMS_ASK_WINDOW_MS is left where they are
- * until the window passes: something keeps putting them back, and every move kills them.
+ * until older attempts leave the window or a placement stays confirmed for 30 seconds.
+ * All moves, including put-backs, share this budget and the retry interval.
  */
 export const TWO_TEAMS_MAX_ASKS = 10;
 export const TWO_TEAMS_ASK_WINDOW_MS = 10 * 60_000;
@@ -151,6 +152,10 @@ export interface TwoTeamsState {
 	told: Map<string, number>;
 	/** when each player was asked to move within TWO_TEAMS_ASK_WINDOW_MS, oldest first */
 	asked: Map<string, number[]>;
+	/**
+	 * balancing: the put-backs within the shared attempt budget, oldest first
+	 */
+	backs: Map<string, number[]>;
 	/** players left where they are for being asked too often (said once, in `stopped`) */
 	capped: Set<string>;
 	/**
@@ -175,6 +180,7 @@ export const emptyTwoTeamsState = (): TwoTeamsState => ({
 	moving: new Map(),
 	told: new Map(),
 	asked: new Map(),
+	backs: new Map(),
 	capped: new Set(),
 	sides: new Map(),
 	seeded: false,
@@ -265,6 +271,7 @@ export function twoTeamsStep(
 		moving: new Map(previous.moving),
 		told: new Map(previous.told),
 		asked: new Map(previous.asked),
+		backs: new Map(previous.backs),
 		capped: new Set(previous.capped),
 		sides: new Map(previous.sides),
 		seeded: previous.seeded,
@@ -341,6 +348,7 @@ export function twoTeamsStep(
 			state.openSince.set(p.steamId, since);
 			if (now - since >= TWO_TEAMS_SETTLED_MS) {
 				state.asked.delete(p.steamId);
+				state.backs.delete(p.steamId);
 				state.capped.delete(p.steamId);
 				state.openSince.delete(p.steamId);
 			}
@@ -354,13 +362,18 @@ export function twoTeamsStep(
 	}
 	for (const id of state.openSince.keys()) if (!on.has(id)) state.openSince.delete(id);
 	for (const [id, m] of state.moving) if (now - m.at >= TWO_TEAMS_RETRY_MS) state.moving.delete(id);
-	for (const [id, times] of state.asked) {
-		const recent = times.filter((t) => now - t < TWO_TEAMS_ASK_WINDOW_MS);
-		if (recent.length) state.asked.set(id, recent);
-		else state.asked.delete(id);
-	}
+	for (const counted of [state.asked, state.backs])
+		for (const [id, times] of counted) {
+			const recent = times.filter((t) => now - t < TWO_TEAMS_ASK_WINDOW_MS);
+			if (recent.length) counted.set(id, recent);
+			else counted.delete(id);
+		}
 	for (const id of state.capped)
-		if ((state.asked.get(id)?.length ?? 0) < TWO_TEAMS_MAX_ASKS) state.capped.delete(id);
+		if (
+			(state.asked.get(id)?.length ?? 0) < TWO_TEAMS_MAX_ASKS &&
+			(state.backs.get(id)?.length ?? 0) < TWO_TEAMS_MAX_ASKS
+		)
+			state.capped.delete(id);
 
 	if (open.length < 2) return { state, moves, whispers, stopped };
 	if (state.checkedAt === null || now - state.checkedAt >= TWO_TEAMS_CHECK_MS) {
@@ -459,6 +472,7 @@ export function twoTeamsStep(
 			mates.set(to, (mates.get(to) ?? 0) + 1);
 		}
 		state.asked.set(p.steamId, [...times, now]);
+		if (why === 'back') state.backs.set(p.steamId, [...(state.backs.get(p.steamId) ?? []), now]);
 		if (watch) {
 			// Nothing is sent: take them as placed where they would have gone.
 			state.would.set(p.steamId, { from: p.faction!, to, seen: now });
@@ -495,12 +509,23 @@ export function twoTeamsStep(
 	// Arrivals, and everyone after a match ends: kept where they are while the sides stay within the
 	// gap (or with their clan), else placed on the lighter side. Right after a match end, not while a
 	// quarter or more have yet to pick a side. In no set order: the game's list order would make the
-	// same players the ones moved at every match start.
+	// same players the ones moved at every match start. With clan tags kept together, players go in
+	// order of what a move would cost their clan: those whose clan is mostly on another side first
+	// (a move takes them to it), then those with no clanmates beside them, then the rest, fewest
+	// clanmates beside them first, so evening a match up splits as few clans as it can.
 	if ((state.holdPending || now < state.holdUntil) && unpicked.length * 4 >= players.length)
 		return { state, moves, whispers, stopped };
+	const splits = (p: { name: string; faction: string | null }) => {
+		const tag = cfg.clans && isOpen(p.faction) ? clanTag(p.name) : null;
+		if (!tag) return 0;
+		const sides = clans.get(tag);
+		const beside = (sides?.get(p.faction!) ?? 1) - 1;
+		const clanSide = clanSideOf(p);
+		return beside - (clanSide !== null && clanSide !== p.faction ? (sides?.get(clanSide) ?? 0) : 0);
+	};
 	const shuffled = players
-		.map((p) => ({ p, k: random() }))
-		.sort((a, b) => a.k - b.k)
+		.map((p) => ({ p, cost: splits(p), k: random() }))
+		.sort((a, b) => a.cost - b.cost || a.k - b.k)
 		.map((x) => x.p);
 	for (const p of shuffled) {
 		if (waiting(p) || !isOpen(p.faction) || (state.sides.get(p.steamId)?.side ?? null) !== null)

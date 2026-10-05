@@ -1,5 +1,6 @@
 // One page of the leaderboard: this server, or every server of its organisation the caller can
-// see. Read at page load from kills, player_sessions and matches; nothing is precomputed.
+// see, from the match lines and the sessions (all time from each player's settled totals), a
+// page kept for a minute.
 // ?scope=server|org&range=7d|30d|90d|all&sort=<metric>&dir=asc|desc&page=1&minMinutes=60
 import { getEnv } from '$lib/server/env';
 import { apiJson, param, route } from '$lib/server/http';

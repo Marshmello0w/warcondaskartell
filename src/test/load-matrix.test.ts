@@ -3,7 +3,7 @@
 // each page is asked on its own here, with no parent data: see page-loads.test.ts for the rule.
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import type { Env } from '$lib/server/env';
 import { hasTestDb, testEnv } from './db';
 import { callLoad, stubGateway } from './call';
@@ -56,7 +56,7 @@ const loads = (dir: string): string[] =>
 		e.isDirectory()
 			? loads(join(dir, e.name))
 			: /^\+(page|layout)\.server\.ts$/.test(e.name)
-				? [relative(APP, join(dir, e.name))]
+				? [relative(APP, join(dir, e.name)).split(sep).join('/')]
 				: []
 	);
 
