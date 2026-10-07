@@ -447,6 +447,8 @@ export interface DossierView {
 		reserve: ListEntryView | null;
 		canBan: boolean;
 		canReserve: boolean;
+		/** the org's suggestions, only for readers who may ban on its list */
+		banReasonPresets: string[] | null;
 	};
 	summary: {
 		sessions: number;
@@ -630,6 +632,8 @@ export interface OrgListsView {
 	membersReserved: boolean;
 	/** what a banned player is shown, see $lib/ban-message; null unless the reader edits the ban list */
 	banMessage: string | null;
+	/** suggestions used across the org, null unless the reader edits the ban list */
+	banReasonPresets: string[] | null;
 	servers: {
 		id: string;
 		name: string;
@@ -690,6 +694,8 @@ export interface ServerListsState {
 	orgId: string;
 	/** the org's ban message, for those who manage bans here or edit the org's ban list; else null */
 	banMessage: string | null;
+	/** suggestions for staff who manage bans here or edit the org's ban list */
+	banReasonPresets: string[] | null;
 	bans: Record<string, BanState>;
 	reserved: Record<string, ReservedSlotState>;
 	sync: {

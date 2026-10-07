@@ -6,7 +6,7 @@
 	import { api, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
 	import { DEFAULT_BAN_MESSAGE, renderBanMessage } from '$lib/ban-message';
-	import { describeSync, EXPIRY_OPTIONS, expiryIso, REASON_PRESETS } from '$lib/lists';
+	import { describeSync, EXPIRY_OPTIONS, expiryIso } from '$lib/lists';
 	import { isSteamId, steamProfiles, type SteamProfile } from '$lib/steam-profiles';
 	import type { ListSyncServer, ListSyncSummary } from '$lib/types';
 	import Modal from './Modal.svelte';
@@ -20,6 +20,7 @@
 		server = null,
 		canOrg,
 		banMessage = null,
+		reasonPresets,
 		onclose,
 		ondone
 	}: {
@@ -34,6 +35,8 @@
 		canOrg: boolean;
 		/** the org's ban message, where the page has it: the dialog then shows the text it makes */
 		banMessage?: string | null;
+		/** the organisation's saved suggestions; [] deliberately offers none */
+		reasonPresets: string[] | null;
 		onclose: () => void;
 		ondone: (scope: 'org' | 'server') => unknown;
 	} = $props();
@@ -181,7 +184,7 @@
 			/></label
 		>
 		<div class="flex flex-wrap gap-1.5">
-			{#each REASON_PRESETS as preset (preset)}
+			{#each reasonPresets ?? [] as preset (preset)}
 				<button
 					type="button"
 					class="chip cursor-pointer hover:bg-white/12 {reason === preset ? 'text-accent' : ''}"

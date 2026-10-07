@@ -1,6 +1,7 @@
 // The whole database, as Drizzle tables. drizzle-kit reads this file to generate migrations
 // (bun run db:generate); the app applies them at startup. Keep it free of SvelteKit imports.
 import { sql } from 'drizzle-orm';
+import { DEFAULT_BAN_REASON_PRESETS } from '../../ban-reasons';
 import {
 	bigint,
 	bigserial,
@@ -199,6 +200,11 @@ export const organizations = pgTable('organizations', {
 	discordInviteUrl: text('discord_invite_url').notNull().default(''),
 	/** what a banned player is shown: the reason and facts about the ban, see $lib/ban-message */
 	banMessage: text('ban_message').notNull().default('{reason}'),
+	/** suggestions in every ban dialog; [] means admins enter reasons manually */
+	banReasonPresets: jsonb('ban_reason_presets')
+		.$type<string[]>()
+		.notNull()
+		.default(sql.raw(`'${JSON.stringify(DEFAULT_BAN_REASON_PRESETS).replace(/'/g, "''")}'::jsonb`)),
 	createdAt: ts('created_at').notNull().defaultNow(),
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });

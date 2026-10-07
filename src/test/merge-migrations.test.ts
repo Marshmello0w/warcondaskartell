@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect, pendingMigrations, runMigrations } from '$lib/server/db';
 import { hasTestDb } from './db';
+import { DEFAULT_BAN_REASON_PRESETS } from '$lib/ban-reasons';
 
 const journalPath = 'drizzle/meta/_journal.json';
 
@@ -20,7 +21,7 @@ test('migration journal is strictly chronological and keeps the applied feed mig
 });
 
 describe.skipIf(!hasTestDb)('upgrading the deployed feed-time schema', () => {
-	test('applies both incoming migrations once and preserves old kills, clocks and deduplication', async () => {
+	test('applies incoming migrations once and preserves old bans, kills, clocks and deduplication', async () => {
 		const name = 'warcon_test_merge_' + randomBytes(5).toString('hex');
 		const admin = new SQL(process.env.TEST_DATABASE_URL!, { max: 1 });
 		const url = new URL(process.env.TEST_DATABASE_URL!);
@@ -31,10 +32,20 @@ describe.skipIf(!hasTestDb)('upgrading the deployed feed-time schema', () => {
 		try {
 			await cp('drizzle', dir, { recursive: true });
 			const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+			const migrationCount = journal.entries.length;
 			journal.entries = journal.entries.filter((e: { idx: number }) => e.idx <= 37);
 			await writeFile(join(dir, 'meta', '_journal.json'), JSON.stringify(journal));
 			await runMigrations(db, dir);
-			expect(await pendingMigrations(db, 'drizzle')).toBe(2);
+			expect(await pendingMigrations(db, 'drizzle')).toBe(migrationCount - 38);
+			await client.unsafe(`INSERT INTO organizations (id, name, slug, ban_message)
+				VALUES ('old-org', 'Old org', 'old-org', '{reason} | Appeal on Discord')`);
+			await client.unsafe(
+				`INSERT INTO lists (id, org_id, kind) VALUES ('old-list', 'old-org', 'ban')`
+			);
+			await client.unsafe(`INSERT INTO list_entries (id, list_id, steam_id, reason)
+				VALUES ('old-ban', 'old-list', '76561198000000091', 'Cheating')`);
+			const oldOrg = (await client.unsafe("SELECT * FROM organizations WHERE id = 'old-org'"))[0];
+			const oldBans = await client.unsafe('SELECT * FROM list_entries');
 			await client.unsafe(`INSERT INTO kills
 				(ts, server_id, event_id, instance_id, match_id, event_time, map,
 				 victim_steam_id, victim_name, tags) VALUES
@@ -55,6 +66,13 @@ describe.skipIf(!hasTestDb)('upgrading the deployed feed-time schema', () => {
 			expect(await client.unsafe('SELECT * FROM kills')).toEqual(before);
 			expect(await client.unsafe('SELECT * FROM feed_clocks')).toEqual(clocks);
 			expect(await client.unsafe('SELECT * FROM feed_events')).toEqual(ledger);
+			const upgradedOrgs = await client.unsafe("SELECT * FROM organizations WHERE id = 'old-org'");
+			expect(upgradedOrgs).toHaveLength(1);
+			expect({ ...upgradedOrgs[0] }).toEqual({
+				...oldOrg,
+				ban_reason_presets: DEFAULT_BAN_REASON_PRESETS
+			});
+			expect(await client.unsafe('SELECT * FROM list_entries')).toEqual(oldBans);
 			const [totals] = await client.unsafe('SELECT * FROM player_totals');
 			expect({
 				...totals,
@@ -73,7 +91,7 @@ describe.skipIf(!hasTestDb)('upgrading the deployed feed-time schema', () => {
 				WHERE indexname IN ('matches_open_idx','audit_target_idx','list_entries_expiry_idx')`);
 			expect(indexes).toHaveLength(3);
 			const applied = await client.unsafe('SELECT * FROM drizzle.__drizzle_migrations ORDER BY id');
-			expect(applied).toHaveLength(40);
+			expect(applied).toHaveLength(migrationCount);
 			await runMigrations(db, 'drizzle');
 			expect(await client.unsafe('SELECT * FROM drizzle.__drizzle_migrations ORDER BY id')).toEqual(
 				applied

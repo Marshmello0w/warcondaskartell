@@ -467,6 +467,16 @@ server's own list, from the moment it is saved; the list keeps the bare reason, 
 on a server keeps the text it was placed with, also when its reason or expiry is edited later.
 The default, `{reason}`, sends the reason alone.
 
+An org owner can edit **Preset reasons** beside the ban message on the organisation's Ban list
+tab. Add, change or remove up to 30 suggestions, each at most 200 characters, and save them for
+every ban dialog in the organisation, including bans on one server only. Admins can still enter
+their own reason or edit a suggestion before banning. An empty list removes all suggestion
+buttons; **Restore defaults** fills the editor with the original six reasons, ready to save.
+Changing these suggestions does not change any existing ban or the organisation's ban message.
+The API accepts `PATCH /api/orgs/:id` with `{ "banReasonPresets": ["Cheating", "Griefing"] }`;
+only an organisation owner or site owner may save it. Read responses include `banReasonPresets`
+for staff who can ban, and `null` for readers without that access.
+
 Each entry shows where it stands on every server: **applied** by the panel, **pending** the next
 sync, **failed** (hover for the server's answer), or **local**. Local means the player was already
 banned (or reserved) on that server by someone working outside the panel. The panel never removes
@@ -1474,7 +1484,7 @@ which call Better Auth server-side behind the login lockout and the audit trail.
 own `/api/auth/*` routes only the OAuth callback is reachable over HTTP; everything else answers 404.
 
 ```
-GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id   PATCH {name} | {discordInviteUrl} | {membersReserved} | {banMessage} | site owner: {serverLimit, suspended, reason, allowPublicStatus, allowPublicLeaderboards}
+GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id   PATCH {name} | {discordInviteUrl} | {membersReserved} | {banMessage} | {banReasonPresets} | site owner: {serverLimit, suspended, reason, allowPublicStatus, allowPublicLeaderboards}
 GET  /api/orgs/:id/members  PATCH/DELETE /api/orgs/:id/members/:userId {role}  PUT .../:userId/grants {grants:[{serverId,roleId}]}
 GET/POST /api/orgs/:id/roles {name,capabilities[]}  PATCH/DELETE .../:roleId {name?,capabilities?}  POST .../:roleId/reset  PUT .../order {ids[]} (every role once, else 409 stale)
 GET/POST /api/orgs/:id/keys {label,capabilities[],serverIds[]|null,expiresDays}  DELETE .../:keyId   (POST returns the token once)

@@ -267,6 +267,7 @@
 			canBan={bans}
 			canWatch={notes}
 			canOrg={listState?.canEditOrgBans ?? false}
+			reasonPresets={listState?.banReasonPresets ?? null}
 		/>
 	{:else}
 		<div class="mb-3 flex flex-wrap items-center gap-2">
@@ -560,6 +561,7 @@
 			server={{ id, name: data.server.name }}
 			canOrg={listState?.canEditOrgBans ?? false}
 			banMessage={listState?.banMessage}
+			reasonPresets={listState?.banReasonPresets ?? null}
 			onclose={() => (banning = null)}
 			ondone={refreshPlayers}
 		/>

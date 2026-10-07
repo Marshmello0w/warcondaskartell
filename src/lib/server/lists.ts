@@ -36,6 +36,7 @@ import {
 	type ListRow
 } from './db/schema';
 import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
+import { DEFAULT_BAN_REASON_PRESETS } from '$lib/ban-reasons';
 import { requireSteamId } from './steam';
 import { desiredFor, memberSlots, summaryOf } from './lists-sync';
 import { latestNames } from './sessions';
@@ -326,6 +327,7 @@ export async function orgListsView(env: Env, org: OrgRow, role: ListsRole): Prom
 		kinds: role.kinds,
 		membersReserved: org.membersReserved,
 		banMessage: role.kinds.includes('ban') ? org.banMessage : null,
+		banReasonPresets: role.kinds.includes('ban') ? org.banReasonPresets : null,
 		servers: srv.map((s) => {
 			const y = syncOf.get(s.id);
 			return {
@@ -967,6 +969,7 @@ export async function serverListsState(
 		orgOwner: !!role?.owner,
 		orgId: server.orgId,
 		banMessage: null,
+		banReasonPresets: null,
 		bans: {},
 		reserved: {},
 		sync: sync
@@ -1000,9 +1003,13 @@ export async function serverListsState(
 	// wanted but not yet on the server
 	const org = (await getOrg(env, server.orgId)) ?? {
 		membersReserved: false,
-		banMessage: DEFAULT_BAN_MESSAGE
+		banMessage: DEFAULT_BAN_MESSAGE,
+		banReasonPresets: DEFAULT_BAN_REASON_PRESETS
 	};
-	if (staff) out.banMessage = org.banMessage;
+	if (staff) {
+		out.banMessage = org.banMessage;
+		out.banReasonPresets = org.banReasonPresets;
+	}
 	const desired = await desiredFor(env, server, org);
 	// a ban on the lists is in force: the panel removes the player itself. One the game also
 	// holds in its own list shows as the panel's.

@@ -495,9 +495,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 			await rm(join(dir, '0039_player_totals.sql'));
 			await rm(join(dir, 'meta', '0039_snapshot.json'));
 			const journal = JSON.parse(await readFile(join(dir, 'meta', '_journal.json'), 'utf8'));
-			journal.entries = journal.entries.filter(
-				(e: { tag: string }) => e.tag !== '0039_player_totals'
-			);
+			journal.entries = journal.entries.filter((e: { idx: number }) => e.idx < 39);
 			await writeFile(join(dir, 'meta', '_journal.json'), JSON.stringify(journal));
 			await runMigrations(db, dir);
 			// history as the worker leaves it: closed and open sessions; ended, drawn, abandoned and

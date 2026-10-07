@@ -18,15 +18,6 @@ export const STATE_TEXT: Record<ListEntryState, string> = {
 	local: 'already on the server, added outside the panel'
 };
 
-export const REASON_PRESETS = [
-	'Cheating',
-	'Team killing',
-	'Toxic behaviour',
-	'Racism / hate speech',
-	'Ban evasion',
-	'Griefing'
-];
-
 /** value = days; 0 = permanent; 'custom' = a datetime-local input */
 export const EXPIRY_OPTIONS = [
 	['0', 'Permanent'],

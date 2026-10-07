@@ -4,13 +4,14 @@ import { requireOrgRole, requireOwner } from '$lib/server/access';
 import {
 	deleteOrg,
 	setBanMessage,
+	setBanReasonPresets,
 	setMembersReserved,
 	setOrgControls,
 	updateOrg
 } from '$lib/server/orgs';
 
 /**
- * {name} or {discordInviteUrl} or {membersReserved} or {banMessage} for org owners; {serverLimit, suspended,
+ * {name}, {discordInviteUrl}, {membersReserved}, {banMessage} or {banReasonPresets} for org owners; {serverLimit, suspended,
  * reason, allowPublicStatus, allowPublicLeaderboards} for the site owner only.
  */
 export const PATCH = route(async (event) => {
@@ -31,6 +32,15 @@ export const PATCH = route(async (event) => {
 	} else if (body.banMessage !== undefined) {
 		const banMessage = await setBanMessage(env, event.request, user, org, body.banMessage);
 		return apiJson({ ok: true, banMessage });
+	} else if (body.banReasonPresets !== undefined) {
+		const banReasonPresets = await setBanReasonPresets(
+			env,
+			event.request,
+			user,
+			org,
+			body.banReasonPresets
+		);
+		return apiJson({ ok: true, banReasonPresets });
 	} else {
 		await updateOrg(env, event.request, user, org, body);
 	}

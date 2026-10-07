@@ -344,6 +344,7 @@
 			steamId={banning.steamId}
 			name={banning.name}
 			canOrg={canBan}
+			reasonPresets={data.lists.banReasonPresets}
 			onclose={() => (banning = null)}
 			ondone={() => invalidateAll()}
 		/>

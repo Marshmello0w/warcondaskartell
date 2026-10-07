@@ -344,7 +344,8 @@ export async function dossier(
 		orgLists: {
 			...membership,
 			canBan: !!listsRole?.kinds.includes('ban'),
-			canReserve: !!listsRole?.kinds.includes('reserve')
+			canReserve: !!listsRole?.kinds.includes('reserve'),
+			banReasonPresets: listsRole?.kinds.includes('ban') ? (org?.banReasonPresets ?? null) : null
 		},
 		steamEnabled: steamEnabled(env),
 		steam: steamView(profiles.get(steamId)),

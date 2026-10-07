@@ -24,6 +24,7 @@ import { gateway } from './gateway';
 import { skipQueued } from './json-webhook-queue';
 import type { InviteStatus, InviteView, ListSyncSummary, OrgMemberView, OrgView } from '$lib/types';
 import { parseDiscordInvite } from '$lib/discord-invite';
+import { banReasonPresetsProblem, normalizeBanReasonPresets } from '$lib/ban-reasons';
 import {
 	BAN_MESSAGE_VARS,
 	DEFAULT_BAN_MESSAGE,
@@ -264,6 +265,35 @@ export async function setBanMessage(
 		detail: { orgId: org.id, banMessage }
 	});
 	return banMessage;
+}
+
+/** Owners manage the suggestions used in every ban dialog in their organisation. */
+export async function setBanReasonPresets(
+	env: Env,
+	req: Request,
+	actor: SessionUser,
+	org: OrgRow,
+	value: unknown
+): Promise<string[]> {
+	const problem = banReasonPresetsProblem(value);
+	if (problem) throw new ApiError(400, problem, 'invalid_presets');
+	const banReasonPresets = normalizeBanReasonPresets(value as string[]);
+	if (JSON.stringify(banReasonPresets) !== JSON.stringify(org.banReasonPresets))
+		await env.db
+			.update(organizations)
+			.set({ banReasonPresets, updatedAt: new Date() })
+			.where(eq(organizations.id, org.id));
+	await writeAudit(env, req, {
+		actor,
+		orgId: org.id,
+		category: 'org',
+		action: 'list.ban_reason_presets',
+		outcome: 'ok',
+		target: org.name,
+		message: 'Ban reason presets changed',
+		detail: { orgId: org.id, banReasonPresets }
+	});
+	return banReasonPresets;
 }
 
 /** Creates an org with the actor as its first owner. */

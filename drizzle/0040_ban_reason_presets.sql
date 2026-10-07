@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "ban_reason_presets" jsonb DEFAULT '["Cheating","Team killing","Toxic behaviour","Racism / hate speech","Ban evasion","Griefing"]'::jsonb NOT NULL;
